@@ -72,6 +72,19 @@ class StoreTests(unittest.TestCase):
             self.store.read()
         self.assertEqual(self.store.progress.read_text(encoding="utf-8"), "manual edit")
 
+    def test_external_edit_during_materialization_is_not_overwritten(self):
+        from workflow_core.store import _atomic_write
+        self.state["goal"] = "new goal"
+        def concurrent_edit(path, data):
+            if path == self.store.state_file:
+                self.store.progress.write_text("new external edit", encoding="utf-8")
+            return _atomic_write(path, data)
+        with patch("workflow_core.store._atomic_write", side_effect=concurrent_edit):
+            with self.assertRaises(ConflictError):
+                self.store.update(self.state, 0, "edit-during-materialization")
+        self.assertEqual(self.store.progress.read_text(encoding="utf-8"), "new external edit")
+        self.assertEqual(self.store.inspect_progress()["state"]["revision"], 1)
+
     def test_corrupt_committed_event_is_not_discarded(self):
         with open(self.store.events, "ab") as stream:
             stream.write(b'{"bad":true}\n')

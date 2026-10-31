@@ -13,17 +13,33 @@ import uuid
 from .store import WorkflowStore, ConflictError, _atomic_write, _json_bytes
 
 
-def process(argv, cwd, timeout=None, stdin=None):
+def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
     """Spool transient output to disk; retain only bounded output in memory."""
+    if cancel_check and cancel_check():
+        return {"exit_code": None, "reason": "cancelled", "stdout": "",
+                "output_truncated": False, "requires_process_review": False}
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         child = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                                  stdout=out, stderr=err, start_new_session=os.name != "nt")
         reason = None
         process_review = False
+        started = time.monotonic()
         try:
-            child.communicate(stdin.encode("utf-8") if stdin is not None else None, timeout=timeout)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
-            reason = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "cancelled"
+            data = stdin.encode("utf-8") if stdin is not None else None
+            while True:
+                if cancel_check and cancel_check():
+                    reason = "cancelled"
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                if timeout is not None and time.monotonic() - started >= timeout:
+                    reason = "timeout"
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                try:
+                    child.communicate(data, timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    data = None
+        except (subprocess.TimeoutExpired, KeyboardInterrupt, OSError) as exc:
+            reason = reason or ("timeout" if isinstance(exc, subprocess.TimeoutExpired) else "cancelled" if isinstance(exc, KeyboardInterrupt) else "process_control_error")
             if os.name == "nt":
                 try:
                     killed = subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True, timeout=5)
@@ -74,6 +90,7 @@ def git_snapshot(project):
 class CodexAdapter:
     def __init__(self, executable="codex", model=None):
         self.executable, self.model = executable, model
+        self.cancel_check = None
 
     def execute(self, project, context, timeout):
         criteria = context["task"]["acceptance_criteria"]
@@ -92,7 +109,7 @@ class CodexAdapter:
             prompt = ("Perform this task. Follow applicable AGENTS.md instructions. Do not modify "
                       ".codex-workflow or PROGRESS.md. Do not create Git commits. Return criteria_met in acceptance_criteria order; "
                       "report needs_input for unanswered questions or permissions.\n" + json.dumps(context, ensure_ascii=False))
-            result = process(argv, project, timeout, prompt)
+            result = process(argv, project, timeout, prompt, cancel_check=self.cancel_check)
         completed, failed, final, usage, thread = False, False, None, None, None
         for line in result.pop("stdout").splitlines():
             try:
@@ -125,6 +142,11 @@ class CodexAdapter:
         if isinstance(usage, dict):
             known_usage = {key: usage.get(key) if type(usage.get(key)) is int and usage[key] >= 0 else None
                            for key in ("input_tokens", "cached_input_tokens", "output_tokens")}
+        if not result["reason"]:
+            result["reason"] = ("nonzero_exit" if result["exit_code"] != 0 else
+                                "output_too_large" if result["output_truncated"] else
+                                "execution_failed" if failed else "incomplete_response" if not completed else
+                                "invalid_response" if not valid else None)
         return {**result, "ok": result["exit_code"] == 0 and completed and not failed and valid
                 and not result["output_truncated"] and not result["reason"],
                 "answer": answer if valid else None, "usage": known_usage,
@@ -138,6 +160,25 @@ class ExecutionService:
         self.guard = WorkflowStore(project)
         self.guard.lock_file = self.store.root / "execution.lock"
         self.journal = self.store.root / "execution.json"
+        self.cancel_file = self.store.root / "cancel.json"
+
+    def _cancel_requested(self, run_id):
+        try:
+            return json.loads(self.cancel_file.read_text(encoding="utf-8")).get("run_id") == run_id
+        except (FileNotFoundError, ValueError):
+            return False
+
+    def cancel(self):
+        record = self._journal()
+        if not record or record["phase"] not in ("running", "verifying"):
+            raise ValueError("no running process to stop")
+        try:
+            with self.guard._lock(timeout=0):
+                raise ValueError("execution is interrupted; review processes and recover")
+        except TimeoutError:
+            pass
+        _atomic_write(self.cancel_file, _json_bytes({"run_id": record["run_id"], "requested": time.time()}))
+        return {"run_id": record["run_id"], "stop_requested": True}
 
     def _save(self, record):
         _atomic_write(self.journal, _json_bytes(record) + b"\n")
@@ -149,9 +190,28 @@ class ExecutionService:
         state = self.store.read()
         record = self._journal()
         blocked = record and record["phase"] != "recorded"
-        ready = [] if blocked else [t["id"] for t in state["tasks"] if self._ready(state, t)]
+        candidates = [t for t in state["tasks"] if self._ready(state, t)]
+        blockers = {t["id"]: reason for t in candidates if (reason := self._run_blocker(state, t))}
+        ready = [] if blocked else [t["id"] for t in candidates if t["id"] not in blockers]
         action = ("record" if record["phase"] == "recording" else "inspect execution; recover only after process review") if blocked else "run" if ready else "review project"
-        return {"state": state, "execution": record, "ready": ready, "next_action": action}
+        return {"state": state, "execution": record, "ready": ready, "next_action": action, "run_blockers": blockers}
+
+    @classmethod
+    def _run_blocker(cls, state, task):
+        try:
+            cls._validate_execution(task, state["policy"])
+        except ValueError as exc:
+            return str(exc)
+        if task.get("attempts", 0) >= 1 + state["policy"].get("max_retries", 1):
+            return "task retry limit reached"
+        cap = state["policy"].get("task_token_limit")
+        history = task.get("executions", [])
+        if cap is not None:
+            if any(x.get("tokens") is None for x in history):
+                return "usage unknown; cannot enforce task token limit"
+            if sum(x["tokens"] for x in history) >= cap:
+                return "task token limit reached"
+        return None
 
     @staticmethod
     def _validate_execution(task, policy):
@@ -176,12 +236,14 @@ class ExecutionService:
     def _task(state, task_id):
         return next(t for t in state["tasks"] if t["id"] == task_id)
 
-    def run(self, task_id=None):
+    def run(self, task_id=None, expected_revision=None):
         with self.guard._lock(timeout=0):
             previous = self._journal()
             if previous and previous["phase"] != "recorded":
                 raise ConflictError("unfinished execution: use record or recover; execution will not repeat")
             state = self.store.read()
+            if expected_revision is not None and state["revision"] != expected_revision:
+                raise ConflictError("revision changed; refresh before starting")
             choices = [t for t in state["tasks"] if self._ready(state, t) and (task_id is None or t["id"] == task_id)]
             if len(choices) != 1:
                 raise ValueError("select one ready task: " + ", ".join(t["id"] for t in choices))
@@ -191,15 +253,9 @@ class ExecutionService:
             if not task["acceptance_criteria"]:
                 raise ValueError("acceptance criteria required before execution")
             attempts = task.get("attempts", 0)
-            if attempts >= 1 + policy.get("max_retries", 1):
-                raise ValueError("task retry limit reached")
-            cap = policy.get("task_token_limit")
-            if cap is not None:
-                history = task.get("executions", [])
-                if any(x.get("tokens") is None for x in history):
-                    raise ValueError("usage unknown; cannot enforce task token limit")
-                if sum(x["tokens"] for x in history) >= cap:
-                    raise ValueError("task token limit reached")
+            blocker = self._run_blocker(state, task)
+            if blocker:
+                raise ValueError(blocker)
             context = self.store.context(task["id"])
             size = len(json.dumps(context, ensure_ascii=False))
             if policy.get("context_char_limit") is not None and size > policy["context_char_limit"]:
@@ -213,6 +269,8 @@ class ExecutionService:
             record["started_revision"] = started["revision"]
             self._save(record)
             try:
+                if isinstance(self.adapter, CodexAdapter):
+                    self.adapter.cancel_check = lambda: self._cancel_requested(record["run_id"])
                 result = self.adapter.execute(self.store.project, context, policy.get("max_seconds"))
             except (OSError, ValueError) as exc:
                 result = {"ok": False, "reason": type(exc).__name__, "usage": None, "answer": None}
@@ -232,7 +290,8 @@ class ExecutionService:
         checks = []
         for command in commands:
             try:
-                result = process(command, self.store.project, policy.get("verification_seconds", 300))
+                result = process(command, self.store.project, policy.get("verification_seconds", 300),
+                                 cancel_check=lambda: self._cancel_requested(record["run_id"]))
                 passed = result["exit_code"] == 0 and result["reason"] is None
                 code, reason = result["exit_code"], result["reason"]
                 process_review = result.get("requires_process_review", False)
@@ -257,7 +316,11 @@ class ExecutionService:
             result = record["result"]
             answer = result.get("answer") or {}
             status = "failed"
-            if result.get("reason") == "interrupted":
+            if result.get("reason") in ("interrupted", "cancelled"):
+                status = "interrupted"
+            elif record.get("force_failed"):
+                status = "failed"
+            elif any(c.get("reason") == "cancelled" for c in record["checks"]):
                 status = "interrupted"
             elif record.get("verify_only"):
                 status = task["status"]
@@ -270,11 +333,15 @@ class ExecutionService:
                 if not answer.get("needs_input") and task["acceptance_criteria"] and all(answer.get("criteria_met", [])):
                     status = "completed" if record["checks"] and all(x["passed"] for x in record["checks"]) else "unverified" if not record["checks"] else "failed"
             before, after = record["baseline"]["files"], record["after"]["files"]
+            changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+            if record.get("verify_only"):
+                changed.update(task["changed_files"])
             task.update(status=status, verification=record["checks"],
-                        changed_files=sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k)),
+                        changed_files=sorted(changed),
                         next_action="select next ready task" if status == "completed" else "review result before retry")
-            task["last_result"] = {"summary": answer.get("summary"), "reason": result.get("reason"),
-                                   "exit_code": result.get("exit_code"), "run_id": record["run_id"]}
+            if not record.get("verify_only") or "last_result" not in task:
+                task["last_result"] = {"summary": answer.get("summary"), "reason": result.get("reason"),
+                                       "exit_code": result.get("exit_code"), "run_id": record["run_id"]}
             if status in ("failed", "interrupted", "needs_input"):
                 task["failed_approaches"].append({**task["last_result"], "status": status})
             usage = result.get("usage") or {}
@@ -304,6 +371,22 @@ class ExecutionService:
                 raise ValueError("no completed result to record; use recover for interrupted execution")
             return self._record(record)
 
+    def reconcile_record(self, expected_revision):
+        """User-reviewed rebase records a stale execution as failed, never completed."""
+        with self.guard._lock(timeout=0):
+            record = self._journal()
+            if not record or record["phase"] != "recording":
+                raise ValueError("no result awaiting recording")
+            state = self.store.read()
+            if state["revision"] != expected_revision:
+                raise ConflictError("revision changed")
+            record.pop("proposed", None)
+            record["started_revision"] = state["revision"]
+            record["force_failed"] = True
+            record["result"].update(ok=False, reason="state_changed; recorded after user review")
+            self._save(record)
+            return self._record(record)
+
     def recover(self, processes_checked=False):
         with self.guard._lock(timeout=0):
             record = self._journal()
@@ -322,13 +405,15 @@ class ExecutionService:
             self._save(record)
             return self._record(record)
 
-    def verify(self, task_id):
+    def verify(self, task_id, expected_revision=None):
         """Re-run checks without asserting acceptance or silently completing a task."""
         with self.guard._lock(timeout=0):
             record = self._journal()
             if record and record["phase"] != "recorded":
                 raise ConflictError("finish recording or recovery first")
             state = self.store.read()
+            if expected_revision is not None and state["revision"] != expected_revision:
+                raise ConflictError("revision changed; refresh before verifying")
             task = self._task(state, task_id)
             commands = self._validate_execution(task, state["policy"])
             record = {"run_id": str(uuid.uuid4()), "task_id": task_id, "phase": "verifying",

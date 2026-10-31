@@ -35,7 +35,14 @@ def _atomic_write(path, data):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(name, path)
+        for attempt in range(6):
+            try:
+                os.replace(name, path)
+                break
+            except PermissionError as exc:
+                if os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 5:
+                    raise
+                time.sleep(0.02 * (2 ** attempt))
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -170,12 +177,19 @@ class WorkflowStore:
 
     def _materialize(self, state, previous=None):
         desired = _render(state)
+        current = None
         if self.progress.exists():
             current = self.progress.read_bytes()
             if current != desired and (previous is None or current != _render(previous)):
                 raise ConflictError("PROGRESS.md was changed externally; resolve before continuing")
-        _atomic_write(self.state_file, _json_bytes(state) + b"\n")
-        _atomic_write(self.progress, desired)
+        serialized = _json_bytes(state) + b"\n"
+        if not self.state_file.exists() or self.state_file.read_bytes() != serialized:
+            _atomic_write(self.state_file, serialized)
+        if current != desired:
+            observed = self.progress.read_bytes() if self.progress.exists() else None
+            if observed != current:
+                raise ConflictError("PROGRESS.md changed while materializing; review external edits")
+            _atomic_write(self.progress, desired)
 
     def _load(self):
         events = self._read_events()
@@ -197,17 +211,30 @@ class WorkflowStore:
             f.flush()
             os.fsync(f.fileno())
 
-    def initialize(self, goal, project_id=None, operation_id=None):
+    def initialize(self, goal, project_id=None, operation_id=None, imported_progress_sha256=None, progress_note=None):
         with self._lock():
             state, _ = self._load()
             if state is not None:
                 raise ConflictError("project already initialized")
             if self.progress.exists():
-                raise ConflictError("existing PROGRESS.md requires manual import")
+                external = self.progress.read_bytes()
+                if imported_progress_sha256 is None:
+                    raise ConflictError("existing PROGRESS.md requires manual import")
+                if hashlib.sha256(external).hexdigest() != imported_progress_sha256:
+                    raise ConflictError("existing PROGRESS.md changed; review again")
+                _atomic_write(self.root / "conflicts" / (str(uuid.uuid4()) + ".md"), external)
+            elif imported_progress_sha256 is not None:
+                raise ConflictError("existing PROGRESS.md changed; review again")
+            if progress_note is not None and not isinstance(progress_note, str):
+                raise ValueError("progress_note must be text")
             state = {"schema_version": 1, "revision": 0, "project_id": project_id or str(uuid.uuid4()),
-                     "goal": goal, "tasks": [], "decisions": [], "open_questions": [], "policy": {}}
+                     "goal": goal, "tasks": [], "decisions": [progress_note.strip()] if progress_note and progress_note.strip() else [], "open_questions": [], "policy": {}}
             _validate(state)
             self._append(state, operation_id or str(uuid.uuid4()), "initialized")
+            if imported_progress_sha256 is not None:
+                if hashlib.sha256(self.progress.read_bytes()).hexdigest() != imported_progress_sha256:
+                    raise ConflictError("existing PROGRESS.md changed while importing; review again")
+                _atomic_write(self.progress, _render(state))
             self._materialize(state)
             return copy.deepcopy(state)
 
@@ -217,6 +244,46 @@ class WorkflowStore:
             if state is None:
                 raise FileNotFoundError("workflow project is not initialized")
             return copy.deepcopy(state)
+
+    def inspect_progress(self):
+        """Read authoritative state and both document versions without overwriting edits."""
+        with self._lock():
+            events = self._read_events()
+            if not events:
+                raise FileNotFoundError("workflow project is not initialized")
+            state = events[-1]["state"]
+            external = self.progress.read_bytes() if self.progress.exists() else b""
+            generated = _render(state)
+            return {"state": copy.deepcopy(state), "generated": generated.decode("utf-8"),
+                    "external": external.decode("utf-8", errors="replace"),
+                    "external_sha256": hashlib.sha256(external).hexdigest(),
+                    "conflict": external != generated}
+
+    def resolve_progress(self, expected_revision, external_sha256, note=None):
+        with self._lock():
+            events = self._read_events()
+            if not events:
+                raise FileNotFoundError("workflow project is not initialized")
+            current = events[-1]["state"]
+            external = self.progress.read_bytes() if self.progress.exists() else b""
+            if current["revision"] != expected_revision or hashlib.sha256(external).hexdigest() != external_sha256:
+                raise ConflictError("document or state changed; review both versions again")
+            if note is not None and not isinstance(note, str):
+                raise ValueError("note must be text")
+            # Back up the exact edited bytes before the explicitly authorized replacement.
+            _atomic_write(self.root / "conflicts" / (str(uuid.uuid4()) + ".md"), external)
+            proposed = copy.deepcopy(current)
+            if note and note.strip():
+                proposed["decisions"].append(note.strip())
+            proposed["revision"] += 1
+            _validate(proposed)
+            observed = self.progress.read_bytes() if self.progress.exists() else b""
+            if hashlib.sha256(observed).hexdigest() != external_sha256:
+                raise ConflictError("document changed while resolving; review again")
+            _atomic_write(self.progress, _render(current))
+            self._append(proposed, str(uuid.uuid4()), "progress_conflict_resolved")
+            self._materialize(proposed, current)
+            return copy.deepcopy(proposed)
 
     def update(self, state, expected_revision, operation_id):
         if not isinstance(operation_id, str) or not operation_id:

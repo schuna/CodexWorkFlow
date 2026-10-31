@@ -20,11 +20,24 @@ def main(argv=None):
     run.add_argument("task", nargs="?")
     run.add_argument("--model")
     commands.add_parser("status")
+    commands.add_parser("stop", help="request cancellation of the active execution")
+    gui = commands.add_parser("gui", help="open the local web UI")
+    gui.add_argument("--port", type=int, default=8765)
+    gui.add_argument("--no-browser", action="store_true")
     for name in ("verify", "handoff"):
         commands.add_parser(name).add_argument("task")
     commands.add_parser("record", help="retry result recording without executing code")
     commands.add_parser("recover").add_argument("--processes-checked", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "gui":
+        from .web import serve
+        try:
+            explicit_project = any(item == "--project" or item.startswith("--project=") for item in (argv if argv is not None else sys.argv[1:]))
+            serve(args.project, args.port, not args.no_browser, Path.cwd() / ".workflow-ui.json", not explicit_project)
+            return 0
+        except (OSError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     service = ExecutionService(args.project, CodexAdapter(model=getattr(args, "model", None)))
     try:
         if args.command == "init":
@@ -53,6 +66,8 @@ def main(argv=None):
             result = service.store.handoff(args.task)
         elif args.command == "record":
             result = service.record()
+        elif args.command == "stop":
+            result = service.cancel()
         else:
             result = service.recover(args.processes_checked)
         print(json.dumps(result, ensure_ascii=False, indent=2))

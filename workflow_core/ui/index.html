@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="workflow-token" content="__WORKFLOW_TOKEN__">
+  <title>Workflow · 작업 보드</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <a href="/" class="brand"><span class="brand-icon">w.</span><span>workflow<span class="brand-sub">작업에 집중하는 공간</span></span></a>
+    <div class="side-label">WORKSPACE</div>
+    <button class="nav-item selected" id="board-nav"><span>▦</span> 작업 보드</button>
+    <button class="nav-item" id="edit-nav"><span>⚙</span> 목표와 계획</button>
+    <div class="project-card"><span class="side-label">현재 프로젝트</span><strong id="project-name">불러오는 중</strong><span id="project-path"></span><button class="text-button" id="open-project">폴더 변경 ↗</button></div>
+    <div class="side-footer"><span class="live-dot"></span> 로컬 작업 공간<br><small>기록은 프로젝트에 저장됩니다.</small></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><span>프로젝트 <span class="muted">/</span> <strong>작업 보드</strong></span><div><span id="connection" class="connection">연결 중</span><button id="refresh" class="quiet">새로고침</button></div></header>
+    <main id="main"><div class="loading">프로젝트를 불러오고 있습니다…</div></main>
+    <div id="error" class="error-banner" role="alert" hidden></div>
+    <footer class="page-footer">한 번에 하나의 작업, 다음 단계는 명확하게.<span>WORKFLOW / LOCAL</span></footer>
+  </div>
+</div>
+
+<dialog id="project-dialog">
+  <form id="project-form"><div class="dialog-head"><div><span class="eyebrow">WORKSPACE</span><h2>프로젝트 열기</h2></div><button type="button" class="icon-button close-dialog" aria-label="닫기">×</button></div>
+  <p class="muted">작업할 Git 프로젝트 폴더를 선택하세요. 기존 기록이 있으면 이어서 엽니다.</p>
+  <label for="folder">프로젝트 폴더</label><div class="input-row"><input id="folder" required placeholder="C:\Projects\my-project"><button type="button" id="choose-folder" class="secondary">폴더 선택</button></div>
+  <div class="dialog-actions"><button type="submit" class="primary">프로젝트 열기</button></div></form>
+</dialog>
+
+<dialog id="plan-dialog" class="wide-dialog">
+  <form id="plan-form"><div class="dialog-head"><div><span class="eyebrow">PROJECT PLAN</span><h2>목표와 작업 계획</h2></div><button type="button" class="icon-button close-dialog" aria-label="닫기">×</button></div>
+  <p class="muted">완료 기준과 검증 명령을 검토하면, 실행 후 기록과 인계는 자동으로 저장됩니다.</p>
+  <section id="existing-progress" class="notice" hidden><strong>기존 진행 기록이 있습니다.</strong>계획 저장 시 원본을 별도 보존하고 새 진행 기록을 만듭니다. 이어서 사용할 내용을 메모로 남기세요.<label for="initial-progress-note">가져올 프로젝트 메모</label><textarea id="initial-progress-note" rows="4"></textarea></section>
+  <label for="goal">이번 프로젝트의 목표</label><textarea id="goal" rows="3" required placeholder="만들고 싶은 결과를 입력하세요. 여러 줄로 나누면 각 줄을 작업으로 제안합니다."></textarea>
+  <div class="editor-toolbar"><span id="suggest-note" class="muted">목표의 각 줄을 작업 초안으로 정리합니다.</span><button type="button" id="suggest" class="secondary">작업 제안 받기</button></div>
+  <div id="task-editors"></div><button id="add-task" class="text-button" type="button">＋ 작업 추가</button>
+  <details class="policy-panel"><summary>실행 한도</summary><div class="policy-grid">
+    <label>추가 실행 횟수<input id="max-retries" type="number" min="0" step="1" value="1" required><small>최초 실행 이후, 작업별</small></label>
+    <label>실행 시간 (초)<input id="max-seconds" type="number" min="1" placeholder="제한 없음"><small>Codex 실행 한 번당</small></label>
+    <label>검증 시간 (초)<input id="verification-seconds" type="number" min="1" placeholder="300"><small>검증 명령 하나당</small></label>
+    <label>작업 토큰 한도<input id="token-limit" type="number" min="1" placeholder="제한 없음"><small>실측 누적량으로 후속 실행 제한</small></label>
+    <label>맥락 문자 수 한도<input id="context-limit" type="number" min="1" placeholder="제한 없음"><small>다음 실행 전 검사</small></label>
+  </div><p class="muted">실행 도중 토큰 상한은 보장되지 않습니다. 사용량이 없으면 알 수 없음으로 표시합니다.</p></details>
+  <div class="dialog-actions"><span class="muted">계획 저장 후 작업을 시작할 수 있습니다.</span><button type="submit" class="primary">계획 검토 완료</button></div>
+  </form>
+</dialog>
+
+<dialog id="conflict-dialog" class="wide-dialog"><div class="dialog-head"><div><span class="eyebrow">RESOLVE</span><h2>진행 기록의 외부 수정 확인</h2></div><button class="icon-button close-dialog" aria-label="닫기">×</button></div>
+  <p class="muted">외부 수정 원본을 별도로 보존한 뒤, 현재 상태에서 진행 기록을 다시 만듭니다. 필요한 내용은 프로젝트 메모로 가져오세요.</p>
+  <div class="conflict-grid"><div><h3>현재 상태에서 만든 기록</h3><pre id="generated-progress"></pre></div><div><h3>외부에서 수정한 내용</h3><pre id="external-progress"></pre></div></div>
+  <label for="conflict-note">보존할 프로젝트 메모</label><textarea id="conflict-note" rows="4" placeholder="중요한 변경 사항을 여기에 남기세요. 원본 파일도 별도로 보존됩니다."></textarea>
+  <div class="dialog-actions"><button id="resolve-conflict" class="primary">메모 반영 후 기록 복구</button></div>
+</dialog>
+</body>
+</html>
