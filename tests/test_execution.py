@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -180,6 +181,23 @@ class ExecutionTests(unittest.TestCase):
                                     capture_output=True, encoding="utf-8")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIsInstance(json.loads(result.stdout), dict)
+
+    def test_cli_unicode_json_round_trip_with_ascii_output_encoding(self):
+        self.change(lambda state: state.update(goal="한국어 목표 😀"))
+        env = {**os.environ, "PYTHONIOENCODING": "ascii"}
+        for command in (["status"], ["handoff", "one"], ["handoff", "없는 작업 😀"]):
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    [sys.executable, "-m", "workflow_core", "--project", self.tmp.name, *command],
+                    capture_output=True, env=env)
+                self.assertEqual(result.returncode, 2 if command[-1] == "없는 작업 😀" else 0)
+                payload = json.loads((result.stderr if result.returncode else result.stdout).decode("ascii"))
+                if result.returncode:
+                    self.assertIn("없는 작업 😀", payload["error"])
+                elif command[0] == "status":
+                    self.assertEqual(payload["state"]["goal"], "한국어 목표 😀")
+                else:
+                    self.assertEqual(payload["goal"], "한국어 목표 😀")
 
 
 if __name__ == "__main__":

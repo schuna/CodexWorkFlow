@@ -70,7 +70,8 @@ def main(argv=None):
             result = service.cancel()
         else:
             result = service.recover(args.processes_checked)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        # ASCII JSON escapes preserve Unicode across Windows console/pipe encodings.
+        print(json.dumps(result, ensure_ascii=True, indent=2))
         if args.command in ("run", "verify", "recover"):
             task_id = getattr(args, "task", None) or service._journal()["task_id"]
             return 0 if service._task(result, task_id)["status"] == "completed" else 1
@@ -78,7 +79,7 @@ def main(argv=None):
     except (OSError, ValueError, KeyError, StopIteration, ConflictError, CorruptStateError) as exc:
         print(json.dumps({"error": str(exc) or type(exc).__name__,
                           "action": "inspect status; retry record for saved results; recover interrupted executions"},
-                         ensure_ascii=False), file=sys.stderr)
+                         ensure_ascii=True), file=sys.stderr)
         return 2
 
 
