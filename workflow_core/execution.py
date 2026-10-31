@@ -11,6 +11,7 @@ import time
 import uuid
 
 from .store import WorkflowStore, ConflictError, _atomic_write, _json_bytes
+from .discovery import find_codex
 
 
 def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
@@ -93,6 +94,9 @@ class CodexAdapter:
         self.cancel_check = None
 
     def execute(self, project, context, timeout):
+        executable = find_codex(self.executable)
+        if not executable:
+            raise FileNotFoundError("Codex 실행 파일을 찾지 못했습니다. Codex 설치 위치와 접근 권한을 확인하세요.")
         criteria = context["task"]["acceptance_criteria"]
         schema = {"type": "object", "additionalProperties": False,
                   "properties": {"summary": {"type": "string"}, "needs_input": {"type": "boolean"},
@@ -101,7 +105,7 @@ class CodexAdapter:
         with tempfile.TemporaryDirectory() as tmp:
             schema_path = Path(tmp) / "schema.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            argv = [self.executable, "exec", "--ephemeral", "--json", "--sandbox", "workspace-write",
+            argv = [executable, "exec", "--ephemeral", "--json", "--sandbox", "workspace-write",
                     "--output-schema", str(schema_path)]
             if self.model:
                 argv += ["--model", self.model]

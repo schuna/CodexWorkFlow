@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 import secrets
 import shlex
-import shutil
 import subprocess
 import sys
 import threading
@@ -17,6 +16,7 @@ import webbrowser
 from urllib.parse import urlparse
 
 from .execution import ExecutionService, git_snapshot, process
+from .discovery import find_codex
 from .store import ConflictError, CorruptStateError, WorkflowStore, _atomic_write, _json_bytes, _validate
 
 
@@ -85,8 +85,9 @@ class WebController:
             return self.snapshot()
 
     def environment(self):
-        executable = shutil.which("codex")
+        executable = find_codex(getattr(self.service.adapter, "executable", None))
         result = {"codex_installed": bool(executable), "authenticated": None, "git": False,
+                  "codex_path": executable,
                   "instructions": (self.service.store.project / "AGENTS.md").exists()}
         try:
             git_snapshot(self.service.store.project)
@@ -238,7 +239,7 @@ class WebController:
             self.operation = action
             service = self.service
             def login():
-                executable = shutil.which("codex")
+                executable = find_codex(getattr(service.adapter, "executable", None))
                 if not executable:
                     raise ValueError("Codex 설치를 확인하세요.")
                 result = process([executable, "login"], service.store.project, 300)

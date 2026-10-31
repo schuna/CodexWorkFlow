@@ -165,7 +165,7 @@ class ExecutionTests(unittest.TestCase):
         def output(items):
             return {"exit_code": 0, "reason": None, "output_truncated": False,
                     "stdout": "\n".join(json.dumps(e) for e in items)}
-        adapter = CodexAdapter()
+        adapter = CodexAdapter(executable=sys.executable)
         with patch("workflow_core.execution.process", return_value=output(events)):
             result = adapter.execute(self.tmp.name, self.store.context("one"), None)
             self.assertTrue(result["ok"])
