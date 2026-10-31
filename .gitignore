@@ -1,2 +1,8 @@
 __pycache__/
 *.py[cod]
+.test-tmp/
+p2-results-*/
+p0-results-*/
+p0-exceptions-*/
+p0-cancel-*/
+p0-encoding-*/

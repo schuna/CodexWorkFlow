@@ -3,7 +3,7 @@
 ## 1. 근거와 현재 상태
 
 - 원문: `codex_workflow_optimization_report.md`. 비 Docker 호스트에서 GUI와 CLI가 프로젝트 상태를 공유하고, 작업 완료 후 상태를 요약하는 개념 설계다.
-- 현재 저장소에는 원문 보고서와 이 개발 계획이 있다. 애플리케이션 코드, 테스트, 패키지 설정, `AGENTS.md`, `PROGRESS.md`는 없다.
+- 현재 저장소에는 원문 보고서, 개발 계획, P0 점검 자료, P1 상태 코어와 P2 공통 실행 서비스·CLI가 있다. 구현·검증 범위는 `P1_STATE_CORE.md`, `P2_EXECUTION_CLI.md`에 기록했다. GUI는 P3에서 구현한다.
 - 공식 Codex 문서 기준으로 비대화형 실행은 `codex exec`, Codex가 읽는 저장소 지침 파일은 `AGENTS.md`다. `CODEX.md`는 제품 전용 계약 파일로 설계할 수 있지만 자동 인식은 전제하지 않는다.
 - 독립 GUI가 Codex 실행 이벤트와 승인을 다뤄야 한다면 app-server를 연동 후보로 평가한다. 기존 Codex 데스크톱 앱의 내부 상태나 세션을 임의로 조작할 수 있다고 가정하지 않는다.
 
