@@ -1,0 +1,112 @@
+import copy
+import json
+import multiprocessing
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from workflow_core import ConflictError, CorruptStateError, WorkflowStore
+
+
+def task(task_id="one"):
+    return {"id": task_id, "title": "Implement", "status": "ready", "acceptance_criteria": ["works"],
+            "dependencies": [], "verification": [], "constraints": [], "changed_files": [],
+            "failed_approaches": [], "next_action": "run"}
+
+
+def competing_update(path, gate, queue, label):
+    store = WorkflowStore(path)
+    state = store.read()
+    state["goal"] = label
+    gate.wait()
+    try:
+        store.update(state, 0, label)
+        queue.put("ok")
+    except ConflictError:
+        queue.put("conflict")
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = WorkflowStore(self.temp.name)
+        self.state = self.store.initialize("goal", project_id="test")
+
+    def test_revision_and_idempotency(self):
+        self.state["tasks"].append(task())
+        result = self.store.update(self.state, 0, "operation-1")
+        self.assertEqual(result["revision"], 1)
+        self.assertEqual(self.store.update(self.state, 0, "operation-1"), result)
+        changed = copy.deepcopy(self.state)
+        changed["goal"] = "different"
+        with self.assertRaises(ConflictError):
+            self.store.update(changed, 0, "operation-1")
+        with self.assertRaises(ConflictError):
+            self.store.update(changed, 0, "operation-2")
+
+    def test_recovery_after_event_commit_and_incomplete_tail(self):
+        self.state["tasks"].append(task())
+        materialize = self.store._materialize
+        calls = 0
+        def interrupted(state, previous=None):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated crash after event append")
+            return materialize(state, previous)
+        with patch.object(self.store, "_materialize", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                self.store.update(self.state, 0, "operation-1")
+        with open(self.store.events, "ab") as stream:
+            stream.write(b'{"incomplete":')
+        restored = self.store.read()
+        self.assertEqual(restored["revision"], 1)
+        self.assertEqual(json.loads(self.store.state_file.read_text(encoding="utf-8")), restored)
+        self.assertTrue(self.store.events.read_bytes().endswith(b"\n"))
+
+    def test_external_edit_is_not_overwritten(self):
+        self.store.progress.write_text("manual edit", encoding="utf-8")
+        with self.assertRaises(ConflictError):
+            self.store.read()
+        self.assertEqual(self.store.progress.read_text(encoding="utf-8"), "manual edit")
+
+    def test_corrupt_committed_event_is_not_discarded(self):
+        with open(self.store.events, "ab") as stream:
+            stream.write(b'{"bad":true}\n')
+        with self.assertRaises(CorruptStateError):
+            self.store.read()
+        self.assertIn(b'"bad"', self.store.events.read_bytes())
+
+    def test_handoff_and_context(self):
+        self.state["tasks"].append(task("../unsafe"))
+        self.store.update(self.state, 0, "add")
+        handoff = self.store.handoff("../unsafe")
+        self.assertEqual(handoff["source_revision"], 1)
+        self.assertEqual(len(list((self.store.root / "handoffs").glob("*/*.json"))), 1)
+        self.assertNotIn("events", self.store.context("../unsafe"))
+        current = self.store.read()
+        del current["tasks"][0]["constraints"]
+        self.store.update(current, 1, "remove")
+        with self.assertRaises(ValueError):
+            self.store.handoff("../unsafe")
+
+    def test_concurrent_processes_cannot_lose_update(self):
+        ctx = multiprocessing.get_context("spawn")
+        gate, queue = ctx.Event(), ctx.Queue()
+        # Each process receives the same revision before the gate is released.
+        workers = [ctx.Process(target=competing_update, args=(self.temp.name, gate, queue, label)) for label in ("a", "b")]
+        for process in workers:
+            process.start()
+        gate.set()
+        outcomes = [queue.get(timeout=20) for _ in workers]
+        for process in workers:
+            process.join(20)
+            self.assertEqual(process.exitcode, 0)
+        self.assertCountEqual(outcomes, ["ok", "conflict"])
+        self.assertEqual(self.store.read()["revision"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
