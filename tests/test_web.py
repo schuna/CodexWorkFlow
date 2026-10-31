@@ -290,6 +290,22 @@ class WebTests(unittest.TestCase):
             self.assertNotIn('"executions"', serialized)
         self.assertLessEqual(max(map(len, contexts)) - min(map(len, contexts)), 4)
 
+    def test_usage_endpoint_counts_failed_attempts_and_does_not_invent_missing_values(self):
+        self.setup_plan()
+        service = self.app.service
+        state = service.store.read()
+        state["tasks"][0].update(attempts=2, executions=[
+            {"tokens": 12, "usage": {"input_tokens": 10, "output_tokens": 2, "cached_input_tokens": 8}},
+            {"tokens": None, "usage": None}])
+        service.store.update(state, state["revision"], "usage-fixture")
+        code, view = self.request("/api/status")
+        self.assertEqual(code, 200)
+        totals = view["task_usage"][self.plan["tasks"][0]["id"]]
+        self.assertIsNone(totals["total_tokens"])
+        self.assertEqual(totals["observed_tokens"], 12)
+        self.assertEqual(totals["missing_run_count"], 1)
+        self.assertEqual(view["project_usage"]["run_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

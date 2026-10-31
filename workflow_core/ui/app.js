@@ -5,7 +5,7 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token = $('meta[name="workflow-token"]').content;
 const labels = {ready:'실행 준비',completed:'완료',running:'실행 중',verifying:'검증 중',recording:'기록 중',failed:'실패',unverified:'미검증',needs_input:'정보 필요',interrupted:'중단됨'};
-const reasons = {cancelled:'사용자가 중단했습니다.',interrupted:'실행이 중단되었습니다.',timeout:'실행 시간 한도에 도달했습니다.',nonzero_exit:'Codex가 오류 코드로 종료되었습니다. 설치·계정·실행 권한을 확인하세요.',execution_failed:'Codex가 실행 실패를 보고했습니다.',incomplete_response:'완료 이벤트를 받지 못했습니다.',invalid_response:'완료 기준에 대한 응답 형식을 확인하지 못했습니다.',output_too_large:'출력 크기 한도를 넘겨 완료로 판정하지 않았습니다.',FileNotFoundError:'실행 파일을 찾을 수 없습니다.',process_control_error:'프로세스를 제어하는 중 오류가 발생했습니다.'};
+const reasons = {cancelled:'사용자가 중단했습니다.',interrupted:'실행이 중단되었습니다.',timeout:'실행 시간 한도에 도달했습니다.',nonzero_exit:'Codex가 오류 코드로 종료되었습니다. 설치·계정·실행 권한을 확인하세요.',execution_failed:'Codex가 실행 실패를 보고했습니다.',verification_failed:'지정 검증이 실패했습니다. 아래 실패 원인을 확인한 뒤 이어서 해결하세요.',incomplete_response:'완료 이벤트를 받지 못했습니다.',invalid_response:'완료 기준에 대한 응답 형식을 확인하지 못했습니다.',output_too_large:'출력 크기 한도를 넘겨 완료로 판정하지 않았습니다.',FileNotFoundError:'실행 파일을 찾을 수 없습니다.',process_control_error:'프로세스를 제어하는 중 오류가 발생했습니다.'};
 let snapshot, selected, environment, draft, editorRevision, initialProgressHash, activeTab = 'summary', lastSignature = '', fetching = false;
 let diffText = null;
 let seenWorkerError = null;
@@ -39,6 +39,11 @@ async function act(path, data = {}) {
 }
 function badge(status) {return `<span class="status ${escape(status)}">${escape(labels[status] || status)}</span>`;}
 function metric(value) {return value == null ? '알 수 없음' : Number(value).toLocaleString('ko-KR');}
+function usageText(totals) {
+  if (!totals || !totals.run_count) return '실행 전';
+  if (totals.complete) return metric(totals.total_tokens) + ' 토큰';
+  return '관측분 ' + metric(totals.observed_tokens) + ' · ' + totals.missing_run_count + '회 미제공';
+}
 function currentTask() {return snapshot?.state?.tasks.find(t => t.id === selected);}
 function isBlocked() {return snapshot?.busy || snapshot?.active || snapshot?.conflict || (snapshot?.execution && snapshot.execution.phase !== 'recorded');}
 
@@ -95,6 +100,7 @@ function render() {
   const done = state.tasks.filter(t => t.status === 'completed').length;
   const task = currentTask();
   const latest = task?.executions?.at(-1);
+  const totals = snapshot.task_usage?.[selected];
   const record = snapshot.execution;
   const runningTask = state.tasks.find(t => t.id === record?.task_id);
   const blocked = isBlocked();
@@ -141,7 +147,7 @@ function render() {
     <div class="action-row"><span>${active ? '브라우저를 닫아도 서비스가 실행 중이면 작업은 유지됩니다.' : escape(reason)}<br>검증 · 결과 기록 · 다음 작업 준비는 자동으로 처리합니다.</span>${button}</div></div></section>
     <section class="card task-list"><div class="card-head"><h3>작업 흐름</h3><span>${done} / ${state.tasks.length} 완료</span></div>${state.tasks.map((t,i) => `<button class="task-row ${escape(t.status)} ${t.id === selected ? 'chosen' : ''}" data-task="${escape(t.id)}" aria-pressed="${t.id === selected}" ${active ? 'disabled' : ''}><span class="task-number">${t.status === 'completed' ? '✓' : String(i+1).padStart(2,'0')}</span><span class="task-name">${escape(t.title)}<span class="task-id">${t.dependencies.length ? '앞선 작업 ' + t.dependencies.length + '개 완료 필요' : '독립 작업'}</span></span>${badge(t.status)}</button>`).join('')}</section></div>
     <aside class="insights"><section class="card insight"><h3>프로젝트 진행 <span>PROGRESS</span></h3><div class="big-number">${done}<small>/ ${state.tasks.length} 작업</small></div><div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div><p>${done === state.tasks.length ? '계획한 작업을 모두 완료했습니다.' : '한 단계씩, 목표에 가까워지고 있습니다.'}</p></section>
-    <section class="card insight"><h3>맥락과 사용량 <span>CONTEXT</span></h3><div class="big-number">${latest ? metric(latest.tokens) : '알 수 없음'}${latest?.tokens != null ? '<small>토큰</small>' : ''}</div><p>선택한 작업의 최근 관측 사용량</p><div class="metric-line"><span>다음 입력 맥락</span><strong>${snapshot.context_chars[selected] == null ? '—' : metric(snapshot.context_chars[selected]) + '자'}</strong></div><div class="metric-line"><span>입력 / 출력</span><strong>${latest ? metric(latest.usage?.input_tokens) + ' / ' + metric(latest.usage?.output_tokens) : '—'}</strong></div><div class="metric-line"><span>캐시 입력</span><strong>${latest ? metric(latest.usage?.cached_input_tokens) : '—'}</strong></div>${latest?.over_token_limit ? '<p class="pill-bad">작업 토큰 한도를 초과했습니다.</p>' : ''}</section>
+    <section class="card insight"><h3>맥락과 사용량 <span>CONTEXT</span></h3><div class="big-number" id="task-total-tokens">${totals?.run_count ? metric(totals.total_tokens) : '실행 전'}${totals?.total_tokens != null ? '<small>토큰</small>' : ''}</div><p>작업 누적 · 실패와 재시도 포함${totals?.run_count ? ' · ' + totals.run_count + '회 실행' : ''}</p>${totals?.missing_run_count ? '<p class="pill-bad">' + escape(usageText(totals)) + ' · 총량 알 수 없음</p>' : ''}<div class="metric-line"><span>최근 실행</span><strong>${latest ? metric(latest.tokens) + (latest.tokens != null ? ' 토큰' : '') : '—'}</strong></div><div class="metric-line"><span>프로젝트 누적</span><strong id="project-total-tokens">${escape(usageText(snapshot.project_usage))}</strong></div><div class="metric-line"><span>다음 입력 맥락</span><strong>${snapshot.context_chars[selected] == null ? '—' : metric(snapshot.context_chars[selected]) + '자'}</strong></div><div class="metric-line"><span>누적 입력 / 출력</span><strong>${totals?.run_count ? metric(totals.input_tokens) + ' / ' + metric(totals.output_tokens) : '—'}</strong></div><div class="metric-line"><span>누적 캐시 입력</span><strong>${totals?.run_count ? metric(totals.cached_input_tokens) : '—'}</strong></div>${latest?.over_token_limit ? '<p class="pill-bad">작업 토큰 한도를 초과했습니다.</p>' : ''}</section>
     <section class="card insight tip"><div class="leaf">↗</div><h3>다음 작업도 가볍게.</h3><p>필요한 작업과 인계만 다음 실행에 담습니다. 이전 대화 전체를 다시 전달하지 않습니다.</p></section></aside></div>
     <section class="card result"><div class="result-tabs"><button class="result-tab ${activeTab === 'summary' ? 'active' : ''}" data-tab="summary">실행 결과</button><button class="result-tab ${activeTab === 'diff' ? 'active' : ''}" data-tab="diff">변경 내용</button><button class="result-tab ${activeTab === 'handoff' ? 'active' : ''}" data-tab="handoff">인계와 맥락</button></div><div class="result-content" id="result-content"></div></section>`;
   $('#progress-fill').style.width = (state.tasks.length ? done / state.tasks.length * 100 : 0) + '%';
@@ -186,8 +192,9 @@ function renderResult() {
   }
   const result = task.last_result;
   box.innerHTML = `<h3>${escape(task.title)} · 실행 결과</h3>${result?.summary ? '<p>' + escape(result.summary) + '</p>' : ''}${result?.reason ? '<p>실행 상태: ' + escape(reasons[result.reason] || result.reason) + '</p>' : ''}${result?.exit_code != null ? '<p class="muted">종료 코드 ' + escape(result.exit_code) + '</p>' : ''}
-    ${task.verification.length ? task.verification.map(check => `<div class="check ${check.passed ? '' : 'failed'}"><span class="check-icon">${check.passed ? '✓' : '×'}</span><span><strong>${check.passed ? '검증 통과' : '검증 실패'}</strong> · 종료 코드 ${escape(check.exit_code ?? '알 수 없음')}<br><code>${escape(check.command.map(c => String(c)).join(' '))}</code>${check.reason ? '<br>' + escape(reasons[check.reason] || check.reason) : ''}</span></div>`).join('') : '<p class="muted">검증이 실행되지 않았습니다.</p>'}
+    ${task.verification.length ? task.verification.map(check => `<div class="check ${check.passed ? '' : 'failed'}"><span class="check-icon">${check.passed ? '✓' : '×'}</span><span><strong>${check.passed ? '검증 통과' : '검증 실패'}</strong> · 종료 코드 ${escape(check.exit_code ?? '알 수 없음')}<br><code>${escape(check.command.map(c => String(c)).join(' '))}</code>${check.reason ? '<br>' + escape(reasons[check.reason] || check.reason) : ''}</span></div>${!check.passed ? '<details class="failure-evidence"><summary>' + escape(check.diagnostics?.summary || '상세 오류가 보존되지 않은 이전 검증입니다.') + '</summary><pre>' + escape(check.diagnostics?.excerpt || '새 검증부터 제한된 오류 요약을 보존합니다.') + '</pre>' + (check.diagnostics?.truncated ? '<small>오류 출력의 일부만 표시합니다.</small>' : '') + '</details>' : ''}`).join('') : '<p class="muted">검증이 실행되지 않았습니다.</p>'}
     <p>이번 실행에서 달라진 경로: ${escape(task.changed_files.join(', ') || '없음')}</p>
+    ${(task.executions || []).length ? '<details class="run-history"><summary>실행 이력 ' + task.executions.length + '회 · ' + escape(usageText(snapshot.task_usage?.[task.id])) + '</summary><ul>' + task.executions.slice(-10).map((entry,i) => '<li>' + (Math.max(0,task.executions.length - 10) + i + 1) + '회 · ' + escape(labels[entry.status] || (task.failed_approaches.some(f => f.run_id === entry.run_id) ? '실패' : '기록됨')) + ' · ' + metric(entry.tokens) + (entry.tokens != null ? ' 토큰' : '') + '</li>').join('') + '</ul></details>' : ''}
     <div class="minor-actions"><button class="text-button" id="verify-again" ${isBlocked() ? 'disabled' : ''}>검증 다시 실행 ↗</button><span class="environment-pill">${snapshot.execution?.phase === 'recorded' && snapshot.execution.task_id === task.id ? '상태와 인계 자동 저장됨' : ''}</span></div>`;
   $('#verify-again').onclick = () => act('verify', {task_id:task.id,revision:snapshot.state.revision});
 }

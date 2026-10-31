@@ -12,6 +12,8 @@ import uuid
 
 from .store import WorkflowStore, ConflictError, _atomic_write, _json_bytes
 from .discovery import find_codex
+from .diagnostics import failure_evidence
+from .telemetry import project_usage
 
 
 def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
@@ -58,8 +60,12 @@ def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
         out.seek(max(0, size - 4 * 1024 * 1024))
         stdout = out.read().decode("utf-8", errors="replace")
         err.seek(0)
-        # Raw output is deliberately not persisted in workflow state.
+        err.seek(0, os.SEEK_END)
+        err.seek(max(0, err.tell() - 64 * 1024))
+        stderr = err.read().decode("utf-8", errors="replace")
+        # Callers persist only selected, sanitized verification evidence.
         return {"exit_code": child.returncode, "reason": reason, "stdout": stdout,
+                "stderr": stderr,
                 "output_truncated": size > 4 * 1024 * 1024, "requires_process_review": process_review}
 
 
@@ -114,6 +120,7 @@ class CodexAdapter:
                       ".codex-workflow or PROGRESS.md. Do not create Git commits. Return criteria_met in acceptance_criteria order; "
                       "report needs_input for unanswered questions or permissions.\n" + json.dumps(context, ensure_ascii=False))
             result = process(argv, project, timeout, prompt, cancel_check=self.cancel_check)
+            result.pop("stderr", None)
         completed, failed, final, usage, thread = False, False, None, None, None
         for line in result.pop("stdout").splitlines():
             try:
@@ -198,7 +205,9 @@ class ExecutionService:
         blockers = {t["id"]: reason for t in candidates if (reason := self._run_blocker(state, t))}
         ready = [] if blocked else [t["id"] for t in candidates if t["id"] not in blockers]
         action = ("record" if record["phase"] == "recording" else "inspect execution; recover only after process review") if blocked else "run" if ready else "review project"
-        return {"state": state, "execution": record, "ready": ready, "next_action": action, "run_blockers": blockers}
+        task_usage, totals = project_usage(state)
+        return {"state": state, "execution": record, "ready": ready, "next_action": action, "run_blockers": blockers,
+                "task_usage": task_usage, "project_usage": totals}
 
     @classmethod
     def _run_blocker(cls, state, task):
@@ -299,12 +308,16 @@ class ExecutionService:
                 passed = result["exit_code"] == 0 and result["reason"] is None
                 code, reason = result["exit_code"], result["reason"]
                 process_review = result.get("requires_process_review", False)
+                diagnostics = failure_evidence(result.get("stdout", ""), result.get("stderr", ""), reason) if not passed else None
             except OSError as exc:
                 passed, code, reason = False, None, type(exc).__name__
                 process_review = False
+                diagnostics = failure_evidence("", str(exc), reason)
             checks.append({"command": command, "passed": passed, "exit_code": code, "reason": reason,
                            "run_id": record["run_id"], "source_revision": record["source_revision"],
                            "timestamp": time.time(), "requires_process_review": process_review})
+            if diagnostics:
+                checks[-1]["diagnostics"] = diagnostics
             if reason in ("cancelled", "timeout"):
                 break
         return checks
@@ -346,12 +359,22 @@ class ExecutionService:
             if not record.get("verify_only") or "last_result" not in task:
                 task["last_result"] = {"summary": answer.get("summary"), "reason": result.get("reason"),
                                        "exit_code": result.get("exit_code"), "run_id": record["run_id"]}
+            failed_checks = [c for c in record["checks"] if not c["passed"]]
+            if status == "failed" and failed_checks:
+                task["last_result"]["reason"] = "verification_failed"
             if status in ("failed", "interrupted", "needs_input"):
-                task["failed_approaches"].append({**task["last_result"], "status": status})
+                failure = {**task["last_result"], "run_id": record["run_id"], "status": status}
+                if failed_checks:
+                    failure["verification_failures"] = [
+                        {"command": c["command"], "exit_code": c["exit_code"],
+                         "summary": c.get("diagnostics", {}).get("summary") or c.get("reason") or "Verification failed"}
+                        for c in failed_checks]
+                task["failed_approaches"].append(failure)
             usage = result.get("usage") or {}
             tokens = (usage["input_tokens"] + usage["output_tokens"]
                       if usage.get("input_tokens") is not None and usage.get("output_tokens") is not None else None)
             execution = {"run_id": record["run_id"], "tokens": tokens,
+                "status": status,
                 "usage": result.get("usage"), "usage_source": result.get("usage_source"),
                 "model": result.get("model"), "timestamp": record["finished"],
                 "elapsed_seconds": record["finished"] - record["started"],

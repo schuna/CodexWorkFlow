@@ -1,0 +1,55 @@
+{
+  "date": "2026-11-01",
+  "timezone": "Asia/Seoul",
+  "prior_changes_commit": "0c7f5d5",
+  "automated_tests": {
+    "passed": 58,
+    "failed": 0,
+    "elapsed_seconds": 36.867,
+    "command": ".venv\\Scripts\\python.exe -m unittest discover -s tests -v"
+  },
+  "context_comparison": {
+    "source_revision": 6,
+    "before_chars": 3661,
+    "after_chars": 1843,
+    "method": "same historical state serialized with old and new builders; no extra model calls"
+  },
+  "board": {
+    "revision": 9,
+    "tasks": 7,
+    "completed": 1,
+    "next_task": "followup-docs",
+    "new_managed_runs": 0
+  },
+  "observed_project_usage": {
+    "run_count": 3,
+    "reported_run_count": 3,
+    "missing_run_count": 0,
+    "observed_tokens": 1260248,
+    "total_tokens": 1260248,
+    "complete": true,
+    "input_tokens": 1246931,
+    "observed_input_tokens": 1246931,
+    "cached_input_tokens": 1090816,
+    "observed_cached_input_tokens": 1090816,
+    "output_tokens": 13317,
+    "observed_output_tokens": 13317
+  },
+  "preserved_prior_run_ids": [
+    "474577ba-e453-4cbe-8c0d-77f980c91db1",
+    "196f8560-2549-43cc-b540-e07a3b02822d",
+    "18c35d80-5664-428d-ab23-14118b762c87"
+  ],
+  "browser_checks": [
+    "cumulative and latest usage shown separately",
+    "two failed executions included in history",
+    "six follow-up tasks and dependencies displayed",
+    "next task start enabled after reload"
+  ],
+  "limitations": [
+    "older failure output was not captured and cannot be reconstructed",
+    "common credential pattern filtering is not a guarantee of removal of all sensitive content",
+    "smaller context JSON is not measured total token savings"
+  ],
+  "screenshot": "workflow-usage-improvements.jpg"
+}

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from .execution import ExecutionService, git_snapshot, process
 from .discovery import find_codex
+from .telemetry import project_usage
 from .store import ConflictError, CorruptStateError, WorkflowStore, _atomic_write, _json_bytes, _validate
 
 
@@ -131,13 +132,14 @@ class WebController:
             if info["active"] or info["busy"]:
                 info["ready"] = []
             state = info["state"]
+            info["task_usage"], info["project_usage"] = project_usage(state)
             for task in state["tasks"]:
                 task["command_lines"] = [command_text(c) for c in task.get("verification_commands", [])]
             info["context_chars"] = {}
             if not info.get("conflict"):
                 for task_id in info.get("ready", []):
                     try:
-                        info["context_chars"][task_id] = len(json.dumps(service.store.context(task_id), ensure_ascii=False))
+                        info["context_chars"][task_id] = len(json.dumps(service.store.build_context(state, task_id), ensure_ascii=False))
                     except ValueError:
                         pass
             return info

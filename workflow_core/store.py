@@ -339,11 +339,42 @@ class WorkflowStore:
                 "next_action": task["next_action"]}
 
     def context(self, task_id):
-        """Return task-specific context without historical event payloads or instructions."""
-        state = self.read()
+        """Return a compact task specification and a single copy of handoff evidence."""
+        return self.build_context(self.read(), task_id)
+
+    @classmethod
+    def build_context(cls, state, task_id):
         task = next((item for item in state["tasks"] if item["id"] == task_id), None)
         if task is None:
             raise KeyError(task_id)
-        task_handoff = self._build_handoff(state, task_id)
-        return {"task": copy.deepcopy(task), "handoff": task_handoff,
-                "sources": {"state_revision": state["revision"], "instructions": "loaded by execution adapter"}}
+        handoff = copy.deepcopy(cls._build_handoff(state, task_id))
+        # Runtime accounting stays in the authoritative state, not the next prompt.
+        spec = {key: copy.deepcopy(task[key]) for key in
+                ("id", "title", "status", "acceptance_criteria", "dependencies", "verification_commands", "user_notes")
+                if key in task}
+        failures = handoff["failed_approaches"]
+        recent = []
+        for failure in failures[-3:]:
+            if not isinstance(failure, dict):
+                recent.append(str(failure)[:500])
+                continue
+            compact = {key: copy.deepcopy(failure[key]) for key in
+                       ("run_id", "status", "reason", "exit_code", "summary", "verification_failures") if key in failure}
+            if any(check.get("run_id") == failure.get("run_id") for check in handoff["verification"]):
+                compact.pop("verification_failures", None)
+                compact["verification_ref"] = "handoff.verification"
+            if isinstance(compact.get("summary"), str) and len(compact["summary"]) > 500:
+                compact["summary"] = compact["summary"][:500]
+                compact["summary_truncated"] = True
+            recent.append(compact)
+        handoff["failed_approaches"] = recent
+        for check in handoff["verification"]:
+            diagnostics = check.get("diagnostics")
+            if isinstance(diagnostics, dict) and len(diagnostics.get("excerpt", "")) > 1200:
+                diagnostics["excerpt"] = diagnostics["excerpt"][-1200:]
+                diagnostics["truncated"] = True
+        return {"task": spec, "handoff": handoff,
+                "sources": {"state_revision": state["revision"], "instructions": "loaded by execution adapter",
+                            "full_task_history": {"path": ".codex-workflow/state.json", "task_id": task_id},
+                            "omitted_execution_count": len(task.get("executions", [])),
+                            "omitted_failure_count": max(0, len(failures) - len(recent))}}

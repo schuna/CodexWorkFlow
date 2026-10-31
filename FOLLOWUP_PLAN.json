@@ -1,0 +1,78 @@
+{
+  "project_id": "d63e6f0e-f81d-4d3c-82da-cd82aaf0cb16",
+  "goal": "Codex workflow 실사용 안정화 및 MVP 수용 검증",
+  "tasks": [
+    {
+      "id": "followup-docs",
+      "title": "문서·수용표 정합화와 Windows 시험 체크리스트 작성",
+      "acceptance_criteria": [
+        "P1/P2/P3 문서를 현재 소스와 대조해 해결됨·미검증·미구현을 구분한다.",
+        "과거 시험 기록을 보존하면서 최신 검증 결과와 지원 환경을 구분한다.",
+        "미충족 수용 기준마다 후속 작업과 Windows 실환경 검증 방법을 연결한다."
+      ],
+      "dependencies": ["task-3f127fbb"],
+      "constraints": ["PROJECT_STATUS_PLAN.md를 근거로 문서와 체크리스트를 갱신한다. 과거 실측 결과를 새 결과로 바꾸지 않는다.", "현재 작업의 실패 원인과 관계없는 수용 조건을 완료로 선언하지 않는다."],
+      "verification_commands": [["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"], ["node", "--check", "workflow_core/ui/app.js"]]
+    },
+    {
+      "id": "followup-windows",
+      "title": "Windows 실제 실패·권한·인코딩·중단 복구 시험",
+      "acceptance_criteria": [
+        "격리 저장소에서 실제 실패 이벤트·구조화 응답 오류·권한 필요·도구 출력 인코딩·시간 초과를 시험하고 버전과 결과를 기록한다.",
+        "취소 후 잔여 프로세스와 부분 변경을 확인하며 허위 완료·중복 실행·기록 유실 없이 복구한다.",
+        "폴더 선택과 로그인 절차의 확인 여부 및 미지원 승인 기능의 해결 경로를 기록한다."
+      ],
+      "dependencies": ["followup-docs"],
+      "constraints": ["실제 Codex 시험은 격리된 프로젝트에서 수행한다.", "사용자 인증·권한·비교 환경이 준비되지 않았으면 needs_input으로 보고한다. 인증 정보를 저장하거나 추측하지 않는다.", "새 로그인은 사용자가 직접 완료한다. 성공하지 않은 시험을 통과로 보고하지 않는다."],
+      "verification_commands": [["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"]]
+    },
+    {
+      "id": "followup-usability",
+      "title": "첫 사용자 3명 사용성 평가와 막힘 개선",
+      "acceptance_criteria": [
+        "서로 다른 실제 첫 사용자 3명의 핵심 흐름·예외 복구·키보드 사용 평가 근거를 기록한다.",
+        "작업당 시작 1회 이하, 별도 저장·요약·세션 생성 0회, 핵심 흐름의 터미널 이동·수동 편집·프롬프트 복사 0회 목표를 평가한다.",
+        "시간·도움 요청·잘못된 선택·막힘을 기록하고 수정·재검증 결과를 남긴다."
+      ],
+      "dependencies": ["followup-windows"],
+      "constraints": ["참가자 확보 전 실제 평가를 진행한 것으로 선언하지 않는다. 모의 어댑터나 에이전트를 실제 사용자로 대체하지 않는다.", "참가자가 없으면 needs_input으로 필요한 정보를 묶어서 요청한다. 외부 메시지 전송은 사용자의 별도 지시를 따른다."],
+      "verification_commands": [["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"]]
+    },
+    {
+      "id": "followup-comparison",
+      "title": "P4 동일 조건 토큰·품질 비교 실험",
+      "acceptance_criteria": [
+        "작은 수정·연속 기능·오류 조사·중단 재개 작업군의 장기 대화 방식과 독립 인계 방식 비교 조건을 고정한다.",
+        "동일 저장소 시작점·모델·설정·검증 명령으로 반복 측정하고 사용량·성공률·재작업·시간·결측을 함께 보고한다.",
+        "별도 요약·재시도 사용량을 포함하고 캐시 입력을 중복 합산하지 않는다. 비교 근거 없이 절감률을 보장하지 않는다."
+      ],
+      "dependencies": ["followup-windows"],
+      "constraints": ["실험 시작 전에 비교 환경·모델·표본·실행 한도를 구체화한다. 필요한 범위가 미정이면 needs_input으로 보고한다.", "관측하지 않은 사용량이나 품질을 추정 실측값으로 채우지 않는다."],
+      "verification_commands": [["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"]]
+    },
+    {
+      "id": "followup-policy",
+      "title": "실측 기반 실행 정책과 상태 운영 기반 정비",
+      "acceptance_criteria": [
+        "비교 실측에 근거해 경고·시간·재시도·사용량 기본값과 결측 처리를 정한다.",
+        "이벤트 용량·보존·정리와 스키마 마이그레이션·백업 복구 정책을 구현하거나 운영 계약으로 명시한다.",
+        "구버전·손상·보존 정리 시험에서 확정 상태와 인계 근거 보존을 확인한다."
+      ],
+      "dependencies": ["followup-comparison"],
+      "constraints": ["실측이 없는 기본값을 최적값으로 단정하지 않는다. 기존 이벤트와 인계 근거를 무단 삭제하지 않는다."],
+      "verification_commands": [["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"]]
+    },
+    {
+      "id": "followup-release",
+      "title": "P5 깨끗한 Windows 설치·통합 수용 검증",
+      "acceptance_criteria": [
+        "실행기·샘플·운영 안내를 준비하고 지원 Python 버전과 Git·Codex 설치·인증·경로를 새 Windows 환경에서 검증한다.",
+        "문서만 따라 설치·첫 실행·다음 작업·재시작·GUI/CLI 교차 실행·중단·기록 복구를 수행한다.",
+        "필수 수동 절차·제한·복구 경로와 미충족 수용 기준을 명시한다."
+      ],
+      "dependencies": ["followup-usability", "followup-policy"],
+      "constraints": ["깨끗한 새 환경을 확보하지 못하면 needs_input으로 보고한다. 현재 개발 환경 시험을 새 환경 설치 검증으로 대체하지 않는다.", "사용자 지시 없이 배포·외부 공유·자동 커밋을 수행하지 않는다."],
+      "verification_commands": [["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"], ["node", "--check", "workflow_core/ui/app.js"]]
+    }
+  ]
+}

@@ -1250,3 +1250,10 @@ dialog {
   line-height:1.7
 }
 
+
+.metric-line { gap: 8px; align-items: flex-start; }
+.metric-line > span { flex-shrink: 0; }
+.metric-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }
+.big-number { overflow-wrap: anywhere; }
+.failure-evidence, .run-history { margin: 14px 0; font-size: 11px; line-height: 1.8; }
+.run-history ul { padding-left: 20px; }
