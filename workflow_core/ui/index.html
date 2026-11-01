@@ -38,7 +38,7 @@
   <p class="muted">완료 기준과 검증 명령을 검토하면, 실행 후 기록과 인계는 자동으로 저장됩니다.</p>
   <section id="existing-progress" class="notice" hidden><strong>기존 진행 기록이 있습니다.</strong>계획 저장 시 원본을 별도 보존하고 새 진행 기록을 만듭니다. 이어서 사용할 내용을 메모로 남기세요.<label for="initial-progress-note">가져올 프로젝트 메모</label><textarea id="initial-progress-note" rows="4"></textarea></section>
   <label for="goal">이번 프로젝트의 목표</label><textarea id="goal" rows="3" required placeholder="만들고 싶은 결과를 입력하세요. 여러 줄로 나누면 각 줄을 작업으로 제안합니다."></textarea>
-  <div class="editor-toolbar"><span id="suggest-note" class="muted">목표의 각 줄을 작업 초안으로 정리합니다.</span><button type="button" id="suggest" class="secondary">작업 제안 받기</button></div>
+  <div class="editor-toolbar"><span id="suggest-note" class="muted">목표의 각 줄을 작업 초안으로 정리합니다.</span><div class="button-group"><button type="button" id="suggest" class="secondary">작업 제안 받기</button><button type="button" id="suggest-ai" class="secondary">AI 작업 분할</button></div></div>
   <div id="task-editors"></div><button id="add-task" class="text-button" type="button">＋ 작업 추가</button>
   <details class="policy-panel"><summary>실행 한도</summary><div class="policy-grid">
     <label>추가 실행 횟수<input id="max-retries" type="number" min="0" step="1" value="1" required><small>최초 실행 이후, 작업별</small></label>

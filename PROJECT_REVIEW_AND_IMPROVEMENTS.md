@@ -111,3 +111,17 @@
 - **대상**: `workflow_core/web.py` (`WebController.suggest`)
 - **개선안**: 기본 줄바꿈 분할 외에, 선택적으로 Codex를 읽기 전용 샌드박스(`--sandbox read-only`)로 짧게 호출하여 저장소 구조를 파악하고 목표에 맞는 세부 작업·의존성·검증 명령 초안을 자동 생성하는 기능을 추가합니다.
 - **기대 효과**: 신규 사용자의 초기 계획 수립 진입 장벽을 크게 낮출 수 있습니다.
+
+---
+
+## 6. 개선 제안 구현 및 검증 결과 (1~5순위 완료)
+
+| 순위 | 개선 항목 | 주요 변경 파일 | 검증 테스트 | 상태 |
+| :--- | :--- | :--- | :--- | :--- |
+| **1순위** | 선행 의존 작업의 인계 요약 자동 주입 (`dependency_results` 및 500자 요약 제한, 웹 UI 인계 탭 표시) | `workflow_core/store.py`, `workflow_core/ui/app.js` | `test_dependency_results_injected_for_dependent_tasks_only` | **완료** (`c403d06`) |
+| **2순위** | Codex JSONL 실시간 스트리밍(`on_stdout_line`), 민감정보 정제 후 `execution.json` 및 웹 UI 실시간 진행 표시 | `workflow_core/execution.py`, `workflow_core/ui/app.js`, `workflow_core/ui/style.css` | `test_process_streams_stdout_lines_and_adapter_reports_redacted_progress` | **완료** (`a8ca33f`) |
+| **3순위** | `tkinter` 폴더 선택 대화상자를 자식 프로세스(`choose_folder`)로 격리 및 유니코드 안전 JSON 전달 | `workflow_core/web.py` | `test_choose_folder_runs_in_isolated_subprocess_and_handles_unicode_and_errors` | **완료** (`aecb53b`) |
+| **4순위** | $O(1)$ Tail Fast-Path 상태 조회(`_load_fast`) 및 이벤트 로그 Compaction(`compact_events`, `max_events_retained`) | `workflow_core/store.py` | `test_fast_path_read_and_event_compaction_preserve_integrity` | **완료** (`56e3cd9`) |
+| **5순위** | 읽기 전용 Codex(`--sandbox read-only`) 기반 AI 작업 분할 초안 생성(`suggest(..., use_ai=True)`) 및 DAG 정규화 | `workflow_core/web.py`, `workflow_core/ui/index.html`, `workflow_core/ui/app.js` | `test_ai_plan_suggest_uses_read_only_sandbox_and_normalizes_dag` | **완료** |
+
+- **최종 회귀 검증**: `python -m unittest discover -s tests -v` **63/63 통과**, `node --check workflow_core/ui/app.js` 통과, `git diff --check` 통과.

@@ -215,6 +215,7 @@ function openEditor() {
   const fields = {'max-retries':'max_retries','max-seconds':'max_seconds','verification-seconds':'verification_seconds','token-limit':'task_token_limit','context-limit':'context_char_limit'};
   Object.entries(fields).forEach(([id,key]) => {$('#' + id).value = draft.policy[key] ?? (key === 'max_retries' ? 1 : '');});
   $('#suggest').disabled = draft.tasks.some(t => t.attempts);
+  if ($('#suggest-ai')) $('#suggest-ai').disabled = draft.tasks.some(t => t.attempts);
   $('#suggest-note').textContent = draft.tasks.some(t => t.attempts) ? '실행 이력이 있는 작업은 유지됩니다. 필요하면 새 작업을 추가하세요.' : '목표의 각 줄을 작업 초안으로 정리합니다.';
   renderEditors(); $('#plan-dialog').showModal();
 }
@@ -239,7 +240,16 @@ function renderEditors() {
     draft.tasks.forEach(t => {t.dependencies = t.dependencies.filter(id => id !== removed.id);}); renderEditors();
   });
 }
-$('#suggest').onclick = async () => {
+async function requestSuggestions(useAi = false) {
+  $('#suggest').disabled = true;
+  if ($('#suggest-ai')) $('#suggest-ai').disabled = true;
+  if (useAi) $('#suggest-note').textContent = 'Codex(읽기 전용)로 작업 분할 초안을 생성하고 있습니다…';
+  try {const result = await api('suggest',{goal:$('#goal').value,use_ai:useAi}); draft.tasks = result.tasks; renderEditors(); $('#suggest-note').textContent = useAi ? 'AI 작업 분할 초안입니다. 제목·완료 기준·선행 작업·검증 명령을 검토하세요.' : '작업 초안입니다. 제목·완료 기준·검증 명령을 검토하세요.';}
+  catch (error) {showError(error);} finally {$('#suggest').disabled = false; if ($('#suggest-ai')) $('#suggest-ai').disabled = false;}
+}
+$('#suggest').onclick = () => requestSuggestions(false);
+if ($('#suggest-ai')) $('#suggest-ai').onclick = () => requestSuggestions(true);
+const _legacySuggestNoop = async () => {
   $('#suggest').disabled = true;
   try {const result = await api('suggest',{goal:$('#goal').value}); draft.tasks = result.tasks; renderEditors(); $('#suggest-note').textContent = '작업 초안입니다. 제목·완료 기준·검증 명령을 검토하세요.';}
   catch (error) {showError(error);} finally {$('#suggest').disabled = false;}

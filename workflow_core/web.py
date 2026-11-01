@@ -9,6 +9,7 @@ import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -168,7 +169,7 @@ class WebController:
                         pass
             return info
 
-    def suggest(self, goal):
+    def suggest(self, goal, use_ai=False):
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError("목표를 입력하세요.")
         lines = [s.strip(" -\t") for s in goal.splitlines() if s.strip()][:20]
@@ -183,9 +184,109 @@ class WebController:
                     commands = ["npm.cmd test" if sys.platform == "win32" else "npm test"]
             except (OSError, ValueError):
                 pass
+        if use_ai:
+            return self._suggest_with_codex(goal.strip(), commands)
         return {"goal": goal.strip(), "tasks": [{"id": "task-" + uuid.uuid4().hex[:8],
                  "title": line, "acceptance_criteria": [line], "constraints": [], "dependencies": [],
                  "command_lines": commands, "user_notes": ""} for line in lines], "policy": {"max_retries": 1}}
+
+    def _suggest_with_codex(self, goal, default_commands):
+        executable = find_codex(getattr(self.service.adapter, "executable", None))
+        if not executable:
+            raise ValueError("Codex 실행 파일을 찾지 못했습니다. Codex 설치를 확인하세요.")
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                            "constraints": {"type": "array", "items": {"type": "string"}},
+                            "dependencies": {"type": "array", "items": {"type": "string"}},
+                            "command_lines": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["id", "title", "acceptance_criteria", "constraints", "dependencies", "command_lines"],
+                    },
+                }
+            },
+            "required": ["tasks"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            schema_path = Path(tmp) / "plan-schema.json"
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            argv = [executable, "exec", "--ephemeral", "--json", "--sandbox", "read-only",
+                    "--output-schema", str(schema_path)]
+            model = getattr(self.service.adapter, "model", None)
+            if model:
+                argv += ["--model", model]
+            argv += ["-"]
+            prompt = (
+                "Break down this project goal into 1 to 10 concrete, sequentially verifiable tasks. "
+                "Do not modify files. Each task must have a unique id, concise title, non-empty acceptance_criteria, "
+                "constraints, dependencies referencing only earlier task ids, and verification command_lines.\nGoal:\n"
+                + goal
+            )
+            res = process(argv, self.service.store.project, 120, prompt)
+        completed, failed, final = False, False, None
+        for line in res.get("stdout", "").splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                failed = True
+                continue
+            if not isinstance(event, dict):
+                failed = True
+                continue
+            kind = event.get("type")
+            if kind in ("turn.failed", "error"):
+                failed = True
+            elif kind == "turn.completed":
+                completed = True
+            elif kind == "item.completed" and event.get("item", {}).get("type") == "agent_message":
+                final = event["item"].get("text")
+        if res.get("exit_code") != 0 or failed or not completed or not final:
+            raise ValueError("AI 작업 분할 초안을 생성하지 못했습니다. 줄 단위 제안을 사용하거나 다시 시도하세요.")
+        try:
+            parsed = json.loads(final)
+            raw_tasks = parsed.get("tasks") if isinstance(parsed, dict) else None
+            if not isinstance(raw_tasks, list) or not raw_tasks:
+                raise ValueError("empty tasks")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("AI 작업 분할 응답 형식을 확인하지 못했습니다.") from exc
+        tasks = []
+        seen_ids = set()
+        for item in raw_tasks[:20]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            raw_id = str(item.get("id") or "").strip()
+            task_id = raw_id if raw_id and raw_id not in seen_ids else "task-" + uuid.uuid4().hex[:8]
+            criteria = [str(c).strip() for c in (item.get("acceptance_criteria") or []) if str(c).strip()] or [title]
+            constraints = [str(c).strip() for c in (item.get("constraints") or []) if str(c).strip()]
+            deps = [str(d).strip() for d in (item.get("dependencies") or []) if str(d).strip() in seen_ids]
+            raw_cmds = [str(c).strip() for c in (item.get("command_lines") or []) if str(c).strip()]
+            valid_cmds = []
+            for cmd in raw_cmds:
+                try:
+                    command_args(cmd)
+                    valid_cmds.append(cmd)
+                except ValueError:
+                    continue
+            tasks.append({"id": task_id, "title": title, "acceptance_criteria": criteria,
+                          "constraints": constraints, "dependencies": deps,
+                          "command_lines": valid_cmds or list(default_commands), "user_notes": ""})
+            seen_ids.add(task_id)
+        if not tasks:
+            raise ValueError("AI 작업 분할 결과가 비어 있습니다.")
+        return {"goal": goal, "tasks": tasks, "policy": {"max_retries": 1}, "ai_generated": True}
 
     def save_plan(self, data):
         with self.mutex:
@@ -404,7 +505,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/choose-folder":
                 result = choose_folder()
             elif path == "/api/suggest":
-                result = controller.suggest(data["goal"])
+                result = controller.suggest(data["goal"], bool(data.get("use_ai")))
             elif path == "/api/plan":
                 result = controller.save_plan(data)
             elif path == "/api/stop":

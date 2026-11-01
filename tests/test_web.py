@@ -326,6 +326,33 @@ class WebTests(unittest.TestCase):
             self.assertEqual(code, 409)
             self.assertIn("폴더 선택 창", body["error"])
 
+    def test_ai_plan_suggest_uses_read_only_sandbox_and_normalizes_dag(self):
+        (self.project / "tests").mkdir(exist_ok=True)
+        ai_tasks = [
+            {"id": "step-1", "title": "기초 설계", "acceptance_criteria": ["설계 문서 작성"],
+             "constraints": ["읽기 전용 확인"], "dependencies": ["step-2", "nonexistent"], "command_lines": []},
+            {"id": "step-2", "title": "기능 구현", "acceptance_criteria": ["구현 완료"],
+             "constraints": [], "dependencies": ["step-1"], "command_lines": ["python -m unittest"]},
+        ]
+        events = [
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps({"tasks": ai_tasks})}},
+            {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}},
+        ]
+        proc_out = {"exit_code": 0, "reason": None, "output_truncated": False,
+                    "stdout": "\n".join(json.dumps(e) for e in events)}
+        with patch("workflow_core.web.find_codex", return_value="codex.exe"), \
+             patch("workflow_core.web.process", return_value=proc_out) as proc_mock:
+            code, body = self.request("/api/suggest", {"goal": "복합 프로젝트 목표", "use_ai": True})
+            self.assertEqual(code, 200, body)
+            argv = proc_mock.call_args[0][0]
+            self.assertIn("read-only", argv)
+            self.assertTrue(body["ai_generated"])
+            self.assertEqual(len(body["tasks"]), 2)
+            self.assertEqual(body["tasks"][0]["dependencies"], [])
+            self.assertTrue(body["tasks"][0]["command_lines"])
+            self.assertEqual(body["tasks"][1]["dependencies"], ["step-1"])
+            self.assertEqual(self.request("/api/plan", body)[0], 200)
+
 
 if __name__ == "__main__":
     unittest.main()
