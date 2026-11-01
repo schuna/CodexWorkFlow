@@ -119,6 +119,38 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(len(store.handoff("one")["failed_approaches"]), 8)
             self.assertEqual(store.read(), before)
 
+    def test_dependency_results_injected_for_dependent_tasks_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkflowStore(tmp)
+            state = store.initialize("goal")
+            long_summary = "implemented feature " + ("x" * 600)
+            state["tasks"] = [
+                {"id": "dep-1", "title": "First step", "status": "completed", "dependencies": [],
+                 "acceptance_criteria": ["done"], "constraints": [], "verification": [],
+                 "changed_files": ["a.py", "b.py"], "failed_approaches": [], "next_action": "select next ready task",
+                 "last_result": {"summary": long_summary, "reason": None, "exit_code": 0, "run_id": "r1"}},
+                {"id": "unrelated", "title": "Other work", "status": "completed", "dependencies": [],
+                 "acceptance_criteria": ["done"], "constraints": [], "verification": [],
+                 "changed_files": ["other.py"], "failed_approaches": [], "next_action": "select next ready task",
+                 "last_result": {"summary": "unrelated summary", "reason": None, "exit_code": 0, "run_id": "r2"}},
+                {"id": "next-task", "title": "Follow-up step", "status": "ready", "dependencies": ["dep-1"],
+                 "acceptance_criteria": ["uses first step"], "constraints": [], "verification": [],
+                 "changed_files": [], "failed_approaches": [], "next_action": "run"},
+            ]
+            store.update(state, 0, "plan")
+            dep_ctx = store.context("next-task")
+            self.assertEqual(len(dep_ctx["dependency_results"]), 1)
+            dep_entry = dep_ctx["dependency_results"][0]
+            self.assertEqual(dep_entry["id"], "dep-1")
+            self.assertEqual(dep_entry["title"], "First step")
+            self.assertEqual(dep_entry["status"], "completed")
+            self.assertEqual(dep_entry["changed_files"], ["a.py", "b.py"])
+            self.assertEqual(len(dep_entry["summary"]), 500)
+            self.assertTrue(dep_entry["summary_truncated"])
+            self.assertNotIn("unrelated", json.dumps(dep_ctx))
+            indep_ctx = store.context("unrelated")
+            self.assertEqual(indep_ctx["dependency_results"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -373,7 +373,21 @@ class WorkflowStore:
             if isinstance(diagnostics, dict) and len(diagnostics.get("excerpt", "")) > 1200:
                 diagnostics["excerpt"] = diagnostics["excerpt"][-1200:]
                 diagnostics["truncated"] = True
-        return {"task": spec, "handoff": handoff,
+        by_id = {item["id"]: item for item in state["tasks"] if isinstance(item, dict) and "id" in item}
+        dependency_results = []
+        for dep_id in task.get("dependencies", []):
+            dep = by_id.get(dep_id)
+            if dep is None:
+                continue
+            last_result = dep.get("last_result") if isinstance(dep.get("last_result"), dict) else {}
+            summary = last_result.get("summary")
+            entry = {"id": dep["id"], "title": dep.get("title", ""), "status": dep.get("status", ""),
+                     "changed_files": copy.deepcopy(dep.get("changed_files", [])), "summary": summary}
+            if isinstance(summary, str) and len(summary) > 500:
+                entry["summary"] = summary[:500]
+                entry["summary_truncated"] = True
+            dependency_results.append(entry)
+        return {"task": spec, "handoff": handoff, "dependency_results": dependency_results,
                 "sources": {"state_revision": state["revision"], "instructions": "loaded by execution adapter",
                             "full_task_history": {"path": ".codex-workflow/state.json", "task_id": task_id},
                             "omitted_execution_count": len(task.get("executions", [])),

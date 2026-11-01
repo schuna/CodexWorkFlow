@@ -180,7 +180,9 @@ function renderResult() {
   }
   if (activeTab === 'handoff') {
     const state = snapshot.state;
-    box.innerHTML = `<dl class="detail-list"><dt>목표</dt><dd>${escape(state.goal)}</dd><dt>작업 맥락</dt><dd>${escape(task.title)}<br>${escape(task.acceptance_criteria.join('\n'))}</dd><dt>제약</dt><dd>${escape(task.constraints.join('\n') || '해당 없음')}</dd><dt>프로젝트 결정</dt><dd>${escape(state.decisions.join('\n') || '해당 없음')}</dd><dt>미해결 사항</dt><dd>${escape(state.open_questions.join('\n') || '해당 없음')}</dd><dt>추가 정보</dt><dd>${escape(task.user_notes || '해당 없음')}</dd><dt>다음 행동</dt><dd>${escape(task.next_action)}</dd><dt>근거</dt><dd>현재 상태 리비전 ${state.revision}. 기존 지침은 실행기가 읽습니다.</dd></dl>`;
+    const deps = (task.dependencies || []).map(id => state.tasks.find(t => t.id === id)).filter(Boolean);
+    const depText = deps.length ? deps.map(d => `${d.title} (${labels[d.status] || d.status})${d.last_result?.summary ? '\n- 요약: ' + d.last_result.summary : ''}${d.changed_files?.length ? '\n- 변경 경로: ' + d.changed_files.join(', ') : ''}`).join('\n\n') : '해당 없음';
+    box.innerHTML = `<dl class="detail-list"><dt>목표</dt><dd>${escape(state.goal)}</dd><dt>작업 맥락</dt><dd>${escape(task.title)}<br>${escape(task.acceptance_criteria.join('\n'))}</dd><dt>선행 작업 인계</dt><dd>${escape(depText)}</dd><dt>제약</dt><dd>${escape(task.constraints.join('\n') || '해당 없음')}</dd><dt>프로젝트 결정</dt><dd>${escape(state.decisions.join('\n') || '해당 없음')}</dd><dt>미해결 사항</dt><dd>${escape(state.open_questions.join('\n') || '해당 없음')}</dd><dt>추가 정보</dt><dd>${escape(task.user_notes || '해당 없음')}</dd><dt>다음 행동</dt><dd>${escape(task.next_action)}</dd><dt>근거</dt><dd>현재 상태 리비전 ${state.revision}. 기존 지침은 실행기가 읽습니다.</dd></dl>`;
     return;
   }
   if (!task.last_result && !task.verification.length && snapshot.execution?.phase === 'recorded') {
