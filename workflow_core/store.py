@@ -115,6 +115,8 @@ class WorkflowStore:
         self.state_file = self.root / "state.json"
         self.progress = self.project / "PROGRESS.md"
         self.lock_file = self.root / "writer.lock"
+        self.archive_dir = self.root / "archive"
+        self.archive_manifest = self.archive_dir / "manifest.json"
 
     @contextlib.contextmanager
     def _lock(self, timeout=5):
@@ -147,6 +149,67 @@ class WorkflowStore:
                 else:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
+    def _read_archive_manifest(self):
+        if not self.archive_manifest.exists():
+            return {"archived_through_revision": -1, "archived_operation_ids": [], "archives": []}
+        try:
+            manifest = json.loads(self.archive_manifest.read_text(encoding="utf-8"))
+            if (not isinstance(manifest, dict)
+                    or type(manifest.get("archived_through_revision")) is not int
+                    or manifest["archived_through_revision"] < 0
+                    or not isinstance(manifest.get("archived_operation_ids"), list)
+                    or not isinstance(manifest.get("archives"), list)):
+                raise ValueError("invalid archive manifest")
+            return manifest
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise CorruptStateError("invalid archive manifest") from exc
+
+    @staticmethod
+    def _parse_event_line(line):
+        try:
+            event = json.loads(line)
+            payload = event["payload"]
+            if event["sha256"] != hashlib.sha256(_json_bytes(payload)).hexdigest():
+                raise ValueError("checksum mismatch")
+            _validate(payload["state"])
+            if not isinstance(payload.get("operation_id"), str) or not payload["operation_id"]:
+                raise ValueError("invalid operation id")
+            return payload
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise CorruptStateError("invalid committed event") from exc
+
+    def _read_tail_pair(self):
+        if not self.events.exists():
+            return None
+        with open(self.events, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size == 0:
+                return None
+            pos = size
+            buf = b""
+            while pos > 0 and buf.count(b"\n") < 3:
+                step = min(65536, pos)
+                pos -= step
+                f.seek(pos)
+                buf = f.read(step) + buf
+        if not buf.endswith(b"\n"):
+            return None
+        lines = [line for line in buf.splitlines() if line]
+        if not lines:
+            return None
+        last_payload = self._parse_event_line(lines[-1])
+        prev_payload = self._parse_event_line(lines[-2]) if len(lines) > 1 else None
+        if prev_payload is not None:
+            if (last_payload["state"]["revision"] != prev_payload["state"]["revision"] + 1
+                    or last_payload["operation_id"] == prev_payload["operation_id"]):
+                raise CorruptStateError("invalid committed event")
+        else:
+            manifest = self._read_archive_manifest()
+            if last_payload["state"]["revision"] != manifest["archived_through_revision"] + 1:
+                raise CorruptStateError("invalid committed event")
+        return last_payload["state"], (prev_payload["state"] if prev_payload is not None else None)
+
     def _read_events(self):
         if not self.events.exists():
             return []
@@ -158,21 +221,18 @@ class WorkflowStore:
                 f.truncate(complete)
                 f.flush()
                 os.fsync(f.fileno())
+        manifest = self._read_archive_manifest()
+        base_revision = manifest["archived_through_revision"] + 1
+        seen_ops = set(manifest["archived_operation_ids"])
         records = []
         for line in data[:complete].splitlines():
-            try:
-                event = json.loads(line)
-                payload = event["payload"]
-                if event["sha256"] != hashlib.sha256(_json_bytes(payload)).hexdigest():
-                    raise ValueError("checksum mismatch")
-                _validate(payload["state"])
-                if payload["state"]["revision"] != len(records) or not payload["operation_id"]:
-                    raise ValueError("invalid event sequence")
-                if any(old["operation_id"] == payload["operation_id"] for old in records):
-                    raise ValueError("duplicate operation id")
-                records.append(payload)
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-                raise CorruptStateError("invalid committed event") from exc
+            payload = self._parse_event_line(line)
+            if payload["state"]["revision"] != base_revision + len(records):
+                raise CorruptStateError("invalid committed event")
+            if payload["operation_id"] in seen_ops:
+                raise CorruptStateError("invalid committed event")
+            seen_ops.add(payload["operation_id"])
+            records.append(payload)
         return records
 
     def _materialize(self, state, previous=None):
@@ -202,6 +262,21 @@ class WorkflowStore:
         self._materialize(state, previous)
         return state, events
 
+    def _load_fast(self):
+        if not self.events.exists():
+            if self.state_file.exists():
+                raise CorruptStateError("state exists without event log")
+            return None
+        if self.state_file.exists():
+            pair = self._read_tail_pair()
+            if pair is not None:
+                state, previous = pair
+                if self.state_file.read_bytes() == _json_bytes(state) + b"\n":
+                    self._materialize(state, previous)
+                    return state
+        state, _ = self._load()
+        return state
+
     def _append(self, state, operation_id, kind):
         payload = {"event_id": str(uuid.uuid4()), "operation_id": operation_id,
                    "type": kind, "timestamp": time.time(), "state": state}
@@ -210,6 +285,40 @@ class WorkflowStore:
             f.write(_json_bytes(event) + b"\n")
             f.flush()
             os.fsync(f.fileno())
+
+    def _compact_unlocked(self, retain):
+        raw_lines = self.events.read_bytes().splitlines() if self.events.exists() else []
+        manifest = self._read_archive_manifest()
+        if len(raw_lines) <= retain:
+            return {"compacted": 0, "retained": len(raw_lines),
+                    "archived_through_revision": manifest["archived_through_revision"]}
+        events = self._read_events()
+        cut = len(events) - retain
+        archived_events = events[:cut]
+        archive_lines = raw_lines[:cut]
+        keep_lines = raw_lines[cut:]
+        start_rev = archived_events[0]["state"]["revision"]
+        end_rev = archived_events[-1]["state"]["revision"]
+        archive_name = f"events-{start_rev}-{end_rev}.jsonl"
+        _atomic_write(self.archive_dir / archive_name, b"\n".join(archive_lines) + b"\n")
+        manifest["archived_through_revision"] = end_rev
+        manifest["archived_operation_ids"] = (
+            manifest["archived_operation_ids"] + [e["operation_id"] for e in archived_events]
+        )[-1000:]
+        manifest["archives"].append({"file": archive_name, "start_revision": start_rev,
+                                     "end_revision": end_rev, "count": cut})
+        _atomic_write(self.archive_manifest, _json_bytes(manifest) + b"\n")
+        _atomic_write(self.events, b"\n".join(keep_lines) + b"\n")
+        return {"compacted": cut, "retained": len(keep_lines), "archived_through_revision": end_rev}
+
+    def compact_events(self, retain=50):
+        if type(retain) is not int or retain < 2:
+            raise ValueError("retain must be an integer >= 2")
+        with self._lock():
+            state, _ = self._load()
+            if state is None:
+                raise FileNotFoundError("workflow project is not initialized")
+            return self._compact_unlocked(retain)
 
     def initialize(self, goal, project_id=None, operation_id=None, imported_progress_sha256=None, progress_note=None):
         with self._lock():
@@ -240,7 +349,7 @@ class WorkflowStore:
 
     def read(self):
         with self._lock():
-            state, _ = self._load()
+            state = self._load_fast()
             if state is None:
                 raise FileNotFoundError("workflow project is not initialized")
             return copy.deepcopy(state)
@@ -248,10 +357,14 @@ class WorkflowStore:
     def inspect_progress(self):
         """Read authoritative state and both document versions without overwriting edits."""
         with self._lock():
-            events = self._read_events()
-            if not events:
-                raise FileNotFoundError("workflow project is not initialized")
-            state = events[-1]["state"]
+            pair = self._read_tail_pair() if self.state_file.exists() else None
+            if pair is not None and self.state_file.read_bytes() == _json_bytes(pair[0]) + b"\n":
+                state = pair[0]
+            else:
+                events = self._read_events()
+                if not events:
+                    raise FileNotFoundError("workflow project is not initialized")
+                state = events[-1]["state"]
             external = self.progress.read_bytes() if self.progress.exists() else b""
             generated = _render(state)
             return {"state": copy.deepcopy(state), "generated": generated.decode("utf-8"),
@@ -299,6 +412,8 @@ class WorkflowStore:
                     if proposed != event["state"]:
                         raise ConflictError("operation id already used for different content")
                     return copy.deepcopy(event["state"])
+            if operation_id in self._read_archive_manifest()["archived_operation_ids"]:
+                raise ConflictError("operation id already archived")
             if current["revision"] != expected_revision:
                 raise ConflictError("revision changed")
             proposed = copy.deepcopy(state)
@@ -308,11 +423,14 @@ class WorkflowStore:
             _validate(proposed)
             self._append(proposed, operation_id, "state_updated")
             self._materialize(proposed, current)
+            max_retained = proposed.get("policy", {}).get("max_events_retained")
+            if type(max_retained) is int and max_retained >= 2 and len(events) + 1 > max_retained:
+                self._compact_unlocked(max_retained)
             return copy.deepcopy(proposed)
 
     def handoff(self, task_id):
         with self._lock():
-            state, _ = self._load()
+            state = self._load_fast()
             if state is None:
                 raise FileNotFoundError("workflow project is not initialized")
             result = self._build_handoff(state, task_id)

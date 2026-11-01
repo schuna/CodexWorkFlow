@@ -120,6 +120,28 @@ class StoreTests(unittest.TestCase):
         self.assertCountEqual(outcomes, ["ok", "conflict"])
         self.assertEqual(self.store.read()["revision"], 1)
 
+    def test_fast_path_read_and_event_compaction_preserve_integrity(self):
+        for i in range(6):
+            current = self.store.read()
+            current["goal"] = f"goal-{i}"
+            self.store.update(current, i, f"op-{i}")
+        with patch.object(self.store, "_read_events", side_effect=AssertionError("full scan should not run")):
+            fast_state = self.store.read()
+            self.assertEqual(fast_state["revision"], 6)
+            self.assertEqual(fast_state["goal"], "goal-5")
+            self.assertFalse(self.store.inspect_progress()["conflict"])
+        summary = self.store.compact_events(retain=3)
+        self.assertEqual(summary, {"compacted": 4, "retained": 3, "archived_through_revision": 3})
+        self.assertEqual(len(self.store.events.read_bytes().splitlines()), 3)
+        self.assertTrue((self.store.archive_dir / "events-0-3.jsonl").is_file())
+        with self.assertRaises(ConflictError):
+            self.store.update(fast_state, 6, "op-0")
+        fast_state["policy"]["max_events_retained"] = 2
+        updated = self.store.update(fast_state, 6, "op-auto-compact")
+        self.assertEqual(updated["revision"], 7)
+        self.assertEqual(len(self.store.events.read_bytes().splitlines()), 2)
+        self.assertEqual(self.store.read()["revision"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()
