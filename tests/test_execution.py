@@ -199,6 +199,35 @@ class ExecutionTests(unittest.TestCase):
                 else:
                     self.assertEqual(payload["goal"], "한국어 목표 😀")
 
+    def test_process_streams_stdout_lines_and_adapter_reports_redacted_progress(self):
+        lines = []
+        result = process([sys.executable, "-u", "-c", "import time; print('first', flush=True); time.sleep(0.25); print('second', flush=True)"],
+                         self.tmp.name, 5, on_stdout_line=lines.append)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(lines, ["first", "second"])
+        events = [
+            {"type": "thread.started", "thread_id": "t-1"},
+            {"type": "item.started", "item": {"type": "command_execution", "command": "curl -H 'Authorization: Bearer secret-bearer-123' https://example.test"}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(
+                {"summary": "completed safely", "needs_input": False, "criteria_met": [True]})}},
+            {"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 2}},
+        ]
+        updates = []
+        adapter = CodexAdapter(executable=sys.executable)
+        adapter.on_progress = updates.append
+        with patch("workflow_core.execution.process", return_value={
+            "exit_code": 0, "reason": None, "output_truncated": False,
+            "stdout": "\n".join(json.dumps(e) for e in events)
+        }):
+            res = adapter.execute(self.tmp.name, self.store.context("one"), None)
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(updates), 4)
+        self.assertEqual(updates[0]["last_event_type"], "thread.started")
+        self.assertIn("명령 실행 중", updates[1]["message"])
+        self.assertNotIn("secret-bearer-123", json.dumps(updates))
+        self.assertEqual(updates[2]["message"], "completed safely")
+        self.assertEqual(updates[-1]["event_count"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1257,3 +1257,6 @@ dialog {
 .big-number { overflow-wrap: anywhere; }
 .failure-evidence, .run-history { margin: 14px 0; font-size: 11px; line-height: 1.8; }
 .run-history ul { padding-left: 20px; }
+.live-progress { margin: 14px 0; padding: 12px 14px; background: #eef1ea; border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.live-progress strong { font-size: 11px; color: var(--green); letter-spacing: .3px; }
+.live-progress span { color: var(--ink); overflow-wrap: anywhere; }

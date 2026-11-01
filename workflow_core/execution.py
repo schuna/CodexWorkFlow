@@ -12,11 +12,11 @@ import uuid
 
 from .store import WorkflowStore, ConflictError, _atomic_write, _json_bytes
 from .discovery import find_codex
-from .diagnostics import failure_evidence
+from .diagnostics import failure_evidence, redact
 from .telemetry import project_usage
 
 
-def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
+def process(argv, cwd, timeout=None, stdin=None, cancel_check=None, on_stdout_line=None):
     """Spool transient output to disk; retain only bounded output in memory."""
     if cancel_check and cancel_check():
         return {"exit_code": None, "reason": "cancelled", "stdout": "",
@@ -27,6 +27,26 @@ def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
         reason = None
         process_review = False
         started = time.monotonic()
+        read_pos = 0
+        line_buf = b""
+        def drain_stdout():
+            nonlocal read_pos, line_buf
+            if not on_stdout_line:
+                return
+            out.seek(0, os.SEEK_END)
+            end = out.tell()
+            if end <= read_pos:
+                return
+            out.seek(read_pos)
+            chunk = out.read(min(end - read_pos, 256 * 1024))
+            read_pos += len(chunk)
+            parts = (line_buf + chunk).split(b"\n")
+            line_buf = parts.pop()
+            for raw_line in parts:
+                try:
+                    on_stdout_line(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
+                except Exception:
+                    pass
         try:
             data = stdin.encode("utf-8") if stdin is not None else None
             while True:
@@ -38,9 +58,11 @@ def process(argv, cwd, timeout=None, stdin=None, cancel_check=None):
                     raise subprocess.TimeoutExpired(argv, timeout)
                 try:
                     child.communicate(data, timeout=0.2)
+                    drain_stdout()
                     break
                 except subprocess.TimeoutExpired:
                     data = None
+                    drain_stdout()
         except (subprocess.TimeoutExpired, KeyboardInterrupt, OSError) as exc:
             reason = reason or ("timeout" if isinstance(exc, subprocess.TimeoutExpired) else "cancelled" if isinstance(exc, KeyboardInterrupt) else "process_control_error")
             if os.name == "nt":
@@ -94,10 +116,54 @@ def git_snapshot(project):
     return {"head": head.strip() if head else None, "files": files}
 
 
+def summarize_codex_event(event, event_count=1):
+    if not isinstance(event, dict):
+        return None
+    kind = event.get("type")
+    if not isinstance(kind, str) or not kind:
+        return None
+    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+    item_type = item.get("type") if isinstance(item.get("type"), str) else None
+    message = kind
+    if kind == "thread.started":
+        message = "Codex 세션 시작됨"
+    elif kind == "turn.started":
+        message = "작업 맥락 분석 및 실행 중"
+    elif kind in ("item.started", "item.completed"):
+        done = kind == "item.completed"
+        if item_type == "command_execution":
+            cmd = item.get("command")
+            if isinstance(cmd, list):
+                cmd = " ".join(str(x) for x in cmd)
+            cmd_text = redact(str(cmd).strip())[:120] if cmd else ""
+            prefix = "명령 실행 완료" if done else "명령 실행 중"
+            message = f"{prefix}: {cmd_text}" if cmd_text else prefix
+        elif item_type == "agent_message":
+            raw = item.get("text") if isinstance(item.get("text"), str) else ""
+            text = raw.strip()
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict) and isinstance(parsed.get("summary"), str):
+                    text = parsed["summary"].strip()
+            except ValueError:
+                pass
+            clean = " ".join(redact(text).split())[:200]
+            message = clean if clean else ("응답 메시지 생성 완료" if done else "응답 메시지 작성 중")
+        elif item_type:
+            message = f"{item_type} {'완료' if done else '진행 중'}"
+    elif kind == "turn.completed":
+        message = "실행 완료 · 검증 준비 중"
+    elif kind in ("turn.failed", "error"):
+        message = "Codex 실행 중 오류 이벤트 수신"
+    return {"event_count": event_count, "last_event_type": kind, "item_type": item_type,
+            "message": message, "updated_at": time.time()}
+
+
 class CodexAdapter:
     def __init__(self, executable="codex", model=None):
         self.executable, self.model = executable, model
         self.cancel_check = None
+        self.on_progress = None
 
     def execute(self, project, context, timeout):
         executable = find_codex(self.executable)
@@ -119,8 +185,24 @@ class CodexAdapter:
             prompt = ("Perform this task. Follow applicable AGENTS.md instructions. Do not modify "
                       ".codex-workflow or PROGRESS.md. Do not create Git commits. Return criteria_met in acceptance_criteria order; "
                       "report needs_input for unanswered questions or permissions.\n" + json.dumps(context, ensure_ascii=False))
-            result = process(argv, project, timeout, prompt, cancel_check=self.cancel_check)
+            seen_events = 0
+            def handle_line(line):
+                nonlocal seen_events
+                if not self.on_progress or not line.strip():
+                    return
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    return
+                if isinstance(event, dict):
+                    seen_events += 1
+                    summary = summarize_codex_event(event, seen_events)
+                    if summary:
+                        self.on_progress(summary)
+            result = process(argv, project, timeout, prompt, cancel_check=self.cancel_check,
+                             on_stdout_line=handle_line if self.on_progress else None)
             result.pop("stderr", None)
+        streamed = seen_events > 0
         completed, failed, final, usage, thread = False, False, None, None, None
         for line in result.pop("stdout").splitlines():
             try:
@@ -131,6 +213,11 @@ class CodexAdapter:
             if not isinstance(event, dict):
                 failed = True
                 continue
+            if not streamed and self.on_progress:
+                seen_events += 1
+                summary = summarize_codex_event(event, seen_events)
+                if summary:
+                    self.on_progress(summary)
             kind = event.get("type")
             if kind == "thread.started":
                 thread = event.get("thread_id")
@@ -275,7 +362,9 @@ class ExecutionService:
                 raise ValueError("context character limit reached")
             record = {"run_id": str(uuid.uuid4()), "task_id": task["id"], "phase": "running",
                       "started": time.time(), "source_revision": state["revision"],
-                      "context_chars": size, "baseline": git_snapshot(self.store.project)}
+                      "context_chars": size, "baseline": git_snapshot(self.store.project),
+                      "progress": {"event_count": 0, "last_event_type": "starting", "item_type": None,
+                                   "message": "Codex 실행 시작 중", "updated_at": time.time()}}
             self._save(record)
             task["status"], task["attempts"] = "running", attempts + 1
             started = self.store.update(state, state["revision"], record["run_id"] + ":start")
@@ -284,6 +373,11 @@ class ExecutionService:
             try:
                 if isinstance(self.adapter, CodexAdapter):
                     self.adapter.cancel_check = lambda: self._cancel_requested(record["run_id"])
+                if hasattr(self.adapter, "on_progress"):
+                    def update_progress(progress):
+                        record["progress"] = progress
+                        self._save(record)
+                    self.adapter.on_progress = update_progress
                 result = self.adapter.execute(self.store.project, context, policy.get("max_seconds"))
             except (OSError, ValueError) as exc:
                 result = {"ok": False, "reason": type(exc).__name__, "usage": None, "answer": None}
@@ -301,7 +395,11 @@ class ExecutionService:
 
     def _verify(self, commands, record, policy):
         checks = []
-        for command in commands:
+        for idx, command in enumerate(commands, 1):
+            record["progress"] = {"event_count": (record.get("progress") or {}).get("event_count", 0),
+                                  "last_event_type": "verifying", "item_type": "verification_command",
+                                  "message": f"지정 검증 실행 중 ({idx}/{len(commands)})", "updated_at": time.time()}
+            self._save(record)
             try:
                 result = process(command, self.store.project, policy.get("verification_seconds", 300),
                                  cancel_check=lambda: self._cancel_requested(record["run_id"]))
