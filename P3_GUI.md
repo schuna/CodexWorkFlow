@@ -2,6 +2,21 @@
 
 2026-11-01. P2 공통 실행 서비스 위에 로컬 HTTP 서버와 한국어 웹 UI를 구현했다. Python 표준 라이브러리만 사용하며 별도 프런트엔드 빌드나 웹 배포는 필요하지 않다.
 
+## 현재 소스 대조 (2026-11-01)
+
+최신 시험·지원 환경·MVP 수용표와 Windows 시험 절차는 [WINDOWS_ACCEPTANCE_CHECKLIST.md](WINDOWS_ACCEPTANCE_CHECKLIST.md)를 따른다. 아래 38개 시험·정상 2회/취소 1회·사용량·화면 기록은 최초 P3 검증 이력으로 보존한다.
+
+| 항목 | 판정 | 현재 근거·남은 확인 |
+| --- | --- | --- |
+| 목표→계획 검토→실행·검증·인계→다음 추천, GUI↔CLI 공유 | 해결됨 (개발자 시험 범위) | `web.py`, `ui/app.js`, `tests/test_web.py`, 과거 `artifacts/p3-validation.json`. 첫 사용자·새 환경 전체 흐름 W06/W07/W10 |
+| 가져오기·문서 충돌·기록 재시도·오래된 결과 실패 기록·정보 보완 | 해결됨 | `save_plan`, `resolve`, `start`, `reconcile_record`; 대응 웹 시험. Windows 장애 주입 W05 |
+| 누적 사용량·결측·검증 실패 근거 | 해결됨 | `telemetry.py`, `diagnostics.py`, `ui/app.js`; `test_usage_diagnostics.py`, `test_usage_endpoint_counts_failed_attempts_and_does_not_invent_missing_values` |
+| 설치 경로 탐색·폴더 선택·계정 연결 | 탐색 시험 해결됨 / 네이티브 선택·신규 인증 미검증 | `discovery.py`, `/api/choose-folder`, `/api/login`; 탐색 시험 7개. W01 |
+| 10개 독립 작업의 입력 누적 방지 | 해결됨 (모의 어댑터) | `test_ten_independent_tasks_do_not_accumulate_completed_context`; 실제 모델 품질·절감률은 미검증 W08 |
+| 첫 사용자 3명·키보드 흐름·조작 목표 | 미검증 | 개발자 브라우저 시험으로 대체하지 않음. W07 |
+| 모델 기반 분할·원시 이벤트 뷰·자식 정리 자동 판별·손상 복구 UI | 미구현 | 현재 줄 단위 초안·정형 결과·수동 프로세스 확인. W04/W09에서 필요성 검토 |
+| 설치 패키징·OS 서비스·자동 재시작 | 미구현 | PATH Python 실행기만 존재; P5 W10. Python 3.10 이상은 요구 버전이며 하위 버전 호환 시험은 별도 |
+
 ## 실행
 
 저장소 루트에서 실행한다. Python 3.10 이상, Git, 설치·인증된 Codex CLI가 필요하다.
@@ -54,7 +69,7 @@ Windows의 일시적인 파일 공유 오류에는 짧은 제한 재시도를 �
 
 서버는 IPv4 루프백에만 바인딩한다. 정확한 Host와 Origin, 매 시작마다 바뀌는 요청 토큰으로 API 요청을 검사한다. CORS를 열지 않고 외부 스크립트·프레임을 허용하지 않는다. 사용자 텍스트는 이스케이프하거나 textContent로 표시한다. 프로젝트 목표·상태·실행 결과와 명령 인수는 로컬 파일에 남을 수 있으므로 비밀값을 넣지 않아야 한다. 원시 Codex 이벤트와 검증 출력은 영구 저장하지 않는다.
 
-## 검증과 남은 항목
+## P3 최초 검증과 남은 항목 (이력)
 
 전체 테스트 명령은 다음과 같다. 이 관리 환경에서는 쓰기 가능한 TEMP/TMP와 루프백 접속 권한을 사용했다.
 

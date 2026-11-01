@@ -2,6 +2,8 @@
 
 기준일: 2026-11-01. 기준 소스: Git HEAD `6326054`와 이번 미커밋 변경. 기존 보고서, `DEVELOPMENT_PLAN.md`, P0~P3 문서, 소스·테스트, `artifacts/p3-validation.json`을 대조했다.
 
+문서 정합화 후속(2026-11-01, `followup-docs`): 현재 소스 대조는 P1/P2/P3 문서 첫 표, 최신 MVP 수용표·지원 환경·Windows W01~W10 절차는 [WINDOWS_ACCEPTANCE_CHECKLIST.md](WINDOWS_ACCEPTANCE_CHECKLIST.md)에 정리했다. 이번 지정 회귀는 58/58 통과(22.046초), JS 문법 검사 통과다. 아래 46개와 실패 재현·실측은 당시 기록으로 보존한다. 문서 작업 다음은 `followup-windows` W01~W06이며, 실제 Windows 시험·첫 사용자 평가·통제 비교·배포 수용은 완료로 올리지 않았다.
+
 후속 갱신: 아래 본문은 현황 보고 작업 완료 시점의 기록이다. 이후 인코딩 수정과 이 보고서를 `0c7f5d5`로 커밋했고, 실사용 개선으로 누적 사용량·검증 실패 근거·맥락 중복을 보완했다. 후속 6개 작업을 리비전 9의 보드에 등록했다. 최신 조치와 58개 회귀 시험 결과는 `WORKFLOW_USAGE_IMPROVEMENTS.md`에 기록했다. 아래 당시의 변경 금지·미커밋 설명은 해당 실행에 관한 이력이다.
 
 ## 현재 판단
