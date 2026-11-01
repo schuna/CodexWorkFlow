@@ -47,6 +47,30 @@ def command_text(argv):
     return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
 
 
+_FOLDER_DIALOG_SCRIPT = (
+    "import json, sys, tkinter\n"
+    "from tkinter import filedialog\n"
+    "window = tkinter.Tk()\n"
+    "window.withdraw()\n"
+    "window.attributes('-topmost', True)\n"
+    "try:\n"
+    "    selected = filedialog.askdirectory(title='프로젝트 폴더 선택', parent=window)\n"
+    "finally:\n"
+    "    window.destroy()\n"
+    "sys.stdout.write(json.dumps({'project': selected or None}, ensure_ascii=True))\n"
+)
+
+
+def choose_folder(timeout=300):
+    completed = subprocess.run([sys.executable, "-c", _FOLDER_DIALOG_SCRIPT],
+                               capture_output=True, timeout=timeout)
+    if completed.returncode != 0:
+        raise ValueError("폴더 선택 창을 열 수 없습니다. 경로를 직접 입력하세요.")
+    payload = json.loads(completed.stdout.decode("utf-8", errors="replace"))
+    selected = payload.get("project") if isinstance(payload, dict) else None
+    return {"project": selected if isinstance(selected, str) and selected else None}
+
+
 class WebController:
     def __init__(self, project, settings=None, adapter=None, restore_project=True):
         self.mutex = threading.RLock()
@@ -378,16 +402,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/open":
                 result = controller.open_project(data["project"])
             elif path == "/api/choose-folder":
-                import tkinter
-                from tkinter import filedialog
-                window = tkinter.Tk()
-                window.withdraw()
-                window.attributes("-topmost", True)
-                try:
-                    selected = filedialog.askdirectory(title="프로젝트 폴더 선택", parent=window)
-                finally:
-                    window.destroy()
-                result = {"project": selected or None}
+                result = choose_folder()
             elif path == "/api/suggest":
                 result = controller.suggest(data["goal"])
             elif path == "/api/plan":

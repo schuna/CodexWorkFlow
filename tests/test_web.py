@@ -306,6 +306,26 @@ class WebTests(unittest.TestCase):
         self.assertEqual(totals["missing_run_count"], 1)
         self.assertEqual(view["project_usage"]["run_count"], 2)
 
+    def test_choose_folder_runs_in_isolated_subprocess_and_handles_unicode_and_errors(self):
+        class Completed:
+            def __init__(self, returncode, stdout):
+                self.returncode = returncode
+                self.stdout = stdout
+        payload = json.dumps({"project": "C:/프로젝트/폴더"}, ensure_ascii=True).encode("ascii")
+        with patch("workflow_core.web.subprocess.run", return_value=Completed(0, payload)) as run_mock:
+            code, body = self.request("/api/choose-folder", {})
+            self.assertEqual(code, 200)
+            self.assertEqual(body, {"project": "C:/프로젝트/폴더"})
+            self.assertEqual(run_mock.call_args[0][0][0], sys.executable)
+        with patch("workflow_core.web.subprocess.run", return_value=Completed(0, b'{"project": null}')):
+            code, body = self.request("/api/choose-folder", {})
+            self.assertEqual(code, 200)
+            self.assertEqual(body, {"project": None})
+        with patch("workflow_core.web.subprocess.run", return_value=Completed(1, b"")):
+            code, body = self.request("/api/choose-folder", {})
+            self.assertEqual(code, 409)
+            self.assertIn("폴더 선택 창", body["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
